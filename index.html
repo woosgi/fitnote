@@ -1247,12 +1247,41 @@ function extraSamples(){
     {id:"s9",memberId:1,date:shift(-11),part:"어깨",keywords:[],text:"페이스풀, 숄더 프레스 가볍게"}
   ];
 }
+// 처음 받은 날 홈에 보이는 '완성된 일지' 예시 3개
+function todaySamples(){
+  return [
+    {id:"t1",memberId:1,date:TODAY,time:"07:00",part:"어깨",demo:true,mode:"ai",keywords:["밴드 외회전","페이스풀"],
+     text:"밴드 외회전 15회 3세트, 페이스풀 20키로 12x3. 오른쪽 어깨 통증 없음. 숄더프레스는 다음주부터",
+     homework:["밴드 외회전 15회 × 3세트 (매일)"],
+     ai:{by:"ai",lead:"오늘은 어깨 재활 루틴을 했어요. 오른쪽 어깨에 통증 없이 모든 세트를 마쳤어요. 밴드로 어깨 안쪽 근육을 먼저 깨우고, 페이스풀로 어깨 뒤쪽을 잡아 주는 순서였어요.",
+       ex:["밴드 외회전 · 15회 × 3세트","페이스풀 20kg · 12회 × 3세트"],
+       good:["오른쪽 어깨 통증이 없었어요. 지난주보다 팔을 돌리는 범위도 넓어졌어요."],
+       warn:["숄더 프레스는 다음 주부터 가벼운 무게로 시작할게요. 그전까지 머리 위로 무거운 걸 드는 동작은 피해 주세요."],hwMemo:[]}},
+    {id:"t2",memberId:2,date:TODAY,time:"11:00",part:"등",demo:true,mode:"ai",keywords:["랫풀다운","자세 좋아짐"],
+     text:"렛풀 30키로 12x4 견갑 후인 잘됨, 라운드숄더 스트레칭",
+     homework:["문틀 가슴 스트레칭 30초 × 3세트 (하루 2번)"],
+     ai:{by:"ai",lead:"오늘은 등 운동과 라운드숄더 교정을 같이 했어요. 랫풀다운에서 날개뼈를 뒤로 모으는 느낌을 확실히 잡으셨어요.",
+       ex:["랫풀다운 30kg · 12회 × 4세트","가슴 열기 스트레칭"],
+       good:["날개뼈를 모으고 당기는 자세가 처음보다 훨씬 안정적이에요. 어깨가 앞으로 말리는 것도 줄었어요."],warn:[],hwMemo:[]}},
+    {id:"t3",memberId:3,date:TODAY,time:"19:30",part:"하체",demo:true,mode:"ai",keywords:["스쿼트","무게 증량"],
+     text:"스쿼트 70kg 8x5 증량 성공, 무릎 안쪽으로 모이는거 주의, 레그컬 25kg 12x3",
+     homework:[],
+     ai:{by:"ai",lead:"오늘은 하체 근력 수업이었어요. 스쿼트를 70kg으로 올렸는데 다섯 세트 모두 성공했어요.",
+       ex:["스쿼트 70kg · 8회 × 5세트","레그 컬 25kg · 12회 × 3세트"],
+       good:["무게를 5kg 올렸는데도 앉는 깊이를 끝까지 유지했어요."],
+       warn:["힘들어질수록 무릎이 안쪽으로 모여요. 마지막 세트에서는 무릎이 발끝 방향을 따라가게 신경 써 주세요."],hwMemo:[]}}
+  ];
+}
 let data;
 try{ data = JSON.parse(localStorage.getItem(STORE)) || sample(); }catch(e){ data = sample(); }
 data.customKeywords = data.customKeywords || [];
 if(!data.sampleCleared) extraSamples().forEach(s => { if(!data.journals.some(j => j.id === s.id)) data.journals.push(s); });
 data.settings = data.settings || {trainer:"", shop:""};
 if(!data.sampleCleared){ const SN = {1:"김민수",2:"이서연",3:"박지훈",4:"최유진",5:"정하늘"}; data.members.forEach(m => { if(SN[m.id] === m.name) m.sample = true; }); }
+if(!data.sampleCleared && !data.demoAdded){
+  todaySamples().forEach(s => { if(data.members.some(m => m.id === s.memberId && m.sample) && !data.journals.some(j => j.id === s.id)) data.journals.push(s); });
+  data.demoAdded = true;
+}
 data.journals.forEach(j => { if(j.part === "엉덩이") j.part = "하체"; });
 if(data.customPart) Object.keys(data.customPart).forEach(k => { if(data.customPart[k] === "엉덩이") data.customPart[k] = "하체"; });
 const SAMPLE_TIMES = {s1:"07:00",s2:"14:00",s3:"10:00",s4:"11:00",s5:"19:30",s6:"09:00",s7:"20:00",s8:"20:00",s9:"09:00"};
@@ -1386,7 +1415,7 @@ function rowHTML(e){
     return `<li class="swipe"><button class="del-btn" data-del="${j.id}">삭제</button><div class="row" data-j="${j.id}">
       <span class="time">${esc(j.time || "")}</span>
       <div class="body">
-        <div class="name">${esc(m.name)}</div>
+        <div class="name">${esc(m.name)}${m.sample ? '<span class="ex-tag">예시</span>' : ""}</div>
         <div class="meta">${esc(j.part || m.goal)} · ${sessionNo(j)}회차${j.result ? '<span class="badge">완성</span>' : ""}</div>
         ${summaryOf(j) ? `<div class="sum">${esc(summaryOf(j))}</div>` : ""}
       </div>${chev}</div></li>`;
@@ -1394,7 +1423,7 @@ function rowHTML(e){
   return `<li class="swipe"><button class="del-btn" data-delp="${e.p.id}">삭제</button><div class="row plan" data-p="${e.p.id}">
     <span class="time">${esc(e.time)}</span>
     <div class="body">
-      <div class="name">${esc(m.name)}</div>
+      <div class="name">${esc(m.name)}${m.sample ? '<span class="ex-tag">예시</span>' : ""}</div>
       <div class="meta">${esc(m.goal || "")}${m.goal ? " · " : ""}<span class="todo-b">작성 전</span></div>
     </div>
     <button class="plan-x" data-px="${e.p.id}" aria-label="빼기">×</button></div></li>`;
@@ -3079,10 +3108,8 @@ $("swEmoji").onclick = () => { S.emoji = !S.emoji; persist(); renderSettings(); 
 $("swSound").onclick = () => { S.sound = !S.sound; persist(); renderSettings(); if(S.sound) chime("done"); };
 $("setGuide").onclick = () => openOnboard(true);
 function clearSamples(){
-  const ids = new Set(data.members.filter(m => m.sample).map(m => m.id));
-  data.journals = data.journals.filter(j => !ids.has(j.memberId) && !String(j.id).startsWith("s"));
-  data.plans = (data.plans || []).filter(p => !ids.has(p.memberId));
-  data.members = data.members.filter(m => !m.sample);
+  // 예시를 지우면 회원·일지·일정을 모두 비우고 처음부터 시작 (설정은 그대로)
+  data.members = []; data.journals = []; data.plans = [];
   data.sampleCleared = true; persist();
 }
 const hasSamples = () => !data.sampleCleared && data.members.some(m => m.sample);
@@ -3091,14 +3118,14 @@ function sampleBanner(){
 }
 function bindSampleBanner(root){
   root.querySelectorAll("[data-clear-samples]").forEach(b => b.onclick = () =>
-    confirmBox("예시를 모두 지울까요?", "예시 회원과 예시 회원의 일지가 모두 지워져요. 내가 추가한 회원은 그대로 남아요.", "모두 지우기", () => {
+    confirmBox("예시를 모두 지우고 새로 시작할까요?", "회원과 일지가 모두 지워져요. 지금까지 추가한 회원과 일지도 함께 지워지니, 남길 내용이 있으면 먼저 백업해 주세요. 내 이름과 설정은 그대로 남아요.", "모두 지우기", () => {
       clearSamples(); toast("예시를 모두 지웠어요. 내 회원을 추가해 보세요");
       $("home").hidden ? show("members") : show("home");
     }));
 }
 $("setClear").onclick = () => {
   const c = $("setClear");
-  if(!c.classList.contains("sure")){ c.classList.add("sure"); $("setClearLabel").textContent = "한 번 더 누르면 예시 회원·일지가 지워져요"; return; }
+  if(!c.classList.contains("sure")){ c.classList.add("sure"); $("setClearLabel").textContent = "한 번 더 누르면 회원·일지가 모두 지워져요"; return; }
   clearSamples(); renderSettings(); toast("예시 데이터를 지웠어요");
 };
 
@@ -3267,6 +3294,7 @@ show("home");
 (async () => {
   const t0 = Date.now();
   await cloudInit();
+  data.journals.forEach(j => { if(j.demo && !j.result && member(j.memberId)){ j.ai.src = srcKey(j); j.result = buildResult(j, {...j.ai, hw:j.homework}); } });
   booted = true;
   try{ if(localStorage.getItem("pt-onboarded") === "1") data.onboarded = true; }catch(e){}
   show("home");
