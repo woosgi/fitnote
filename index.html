@@ -1627,6 +1627,7 @@ function newJournal(memberId, date, time){
 }
 /* ===== 일지 작성 (자동 저장) ===== */
 function openJournal(j){
+  refreshHint();
   current = j;
   const m = member(j.memberId);
   $("wName").textContent = `${m.name} 수업일지`;
@@ -2218,8 +2219,30 @@ function proxyAI(){
   }};
 }
 let aiNote = "";
+// 베타: 한 사람당 하루 AI 정리 횟수 제한 (버튼 한 번 = 1번)
+const AI_DAILY = 20;
+let aiBlocked = false;
+function aiCount(){ try{ const o = JSON.parse(localStorage.getItem("fitnote-ai-uses")) || {}; return o.d === TODAY ? o.n : 0; }catch(e){ return 0; } }
+const aiLeft = () => Math.max(0, AI_DAILY - aiCount());
+function startAI(){   // AI를 쓰는 버튼을 누를 때 한 번
+  if(!PROXY_ON) return;
+  if(aiLeft() <= 0){ aiBlocked = true; aiNote = "오늘 AI 정리를 다 썼어요"; return; }
+  aiBlocked = false;
+  try{ localStorage.setItem("fitnote-ai-uses", JSON.stringify({d:TODAY, n:aiCount() + 1})); }catch(e){}
+}
+function aiLeftNote(){   // 거의 다 썼을 때 알려 주기
+  if(!PROXY_ON || aiBlocked) return "";
+  const n = aiLeft();
+  return n === 0 ? "오늘 AI 정리를 모두 썼어요 · 내일 다시 20번 채워져요" : n <= 3 ? `오늘 AI 정리가 ${n}번 남았어요` : "";
+}
+function refreshHint(){
+  if(!PROXY_ON){ $("hint").textContent = HINT; return; }
+  const n = aiLeft();
+  $("hint").textContent = n === 0 ? "오늘 AI 정리를 다 썼어요. 내일까지는 앱이 기본 정리로 채워요"
+    : n <= 5 ? `오늘 AI 정리 ${n}번 남았어요 (매일 ${AI_DAILY}번)` : HINT;
+}
 async function aiNS(){
-  if(!IN_CLAUDE) return PROXY_ON ? proxyAI() : null;
+  if(!IN_CLAUDE) return PROXY_ON && !aiBlocked ? proxyAI() : null;
   try{ return await Promise.race([claude.use("sample"), new Promise(r => setTimeout(() => r(null), 4000))]); }
   catch(e){ return null; }
 }
@@ -2377,7 +2400,7 @@ function readyToGo(){
 }
 $("aiBtn").onclick = async () => {
   if(busy || !readyToGo()) return;
-  aiNote = ""; const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
+  aiNote = ""; startAI(); const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
   let p = null;
   try{ p = await aiParts(j); }catch(e){ p = null; }
   const usedAI = !!p;
@@ -2386,6 +2409,8 @@ $("aiBtn").onclick = async () => {
   done(); if(current !== j) return;
   renderDraft();
   if(!usedAI && AI_ON) toast((aiNote ? aiNote + " · " : "지금은 AI를 쓸 수 없어 ") + "기본 정리로 채웠어요");
+  else if(aiLeftNote()) toast(aiLeftNote());
+  refreshHint();
   chime("done");
   setTimeout(() => $("draft").scrollIntoView({behavior:"smooth", block:"start"}), 50);
 };
@@ -2424,10 +2449,12 @@ function renderDraft(){
 }
 $("nextBtn").onclick = async () => {
   if(busy || !readyToGo()) return;
+  aiNote = ""; startAI();
   const j = current, done = setBusy($("nextBtn"), "맞춤법 확인 중…");
   const r = await plainCheck(j);
-  done();
-  if(r.ok) toast(r.changes || r.abbr ? "줄임말·맞춤법·존댓말을 정리했어요" : "고칠 곳 없이 깔끔했어요");
+  done(); refreshHint();
+  if(r.ok) toast(aiLeftNote() || (r.changes || r.abbr ? "줄임말·맞춤법·존댓말을 정리했어요" : "고칠 곳 없이 깔끔했어요"));
+  else if(aiBlocked) toast("오늘 AI 정리를 다 썼어요 · 줄임말과 띄어쓰기만 정리했어요");
   else toast(AI_ON ? "줄임말은 정리했어요 · 맞춤법 검사는 지금 쓸 수 없어요" : "줄임말과 띄어쓰기를 정리했어요");
   j.mode = "plain"; persist(); openHw(j);
 };
@@ -2507,9 +2534,12 @@ $("hwSkip").onclick = () => finishHw(true);
 // 완성된 일지에서 '다시 정리하기'
 async function fillJournal(j, btn){
   if(busy) return;
+  aiNote = ""; startAI();
   const done = setBusy(btn, j.mode === "plain" ? "맞춤법 확인 중…" : "AI가 다시 채우고 있어요…");
   try{ await makeResult(j, true); } finally { done(); }
-  openResult(j, "home"); chime("done");
+  openResult(j, "home"); chime("done"); refreshHint();
+  const note = aiBlocked ? "오늘 AI 정리를 다 썼어요 · 기본 정리로 채웠어요" : aiLeftNote();
+  if(note) toast(note);
 }
 
 
@@ -3019,7 +3049,7 @@ $("bkCode").onclick = async () => {
 let dl = null;
 try{ claude.use("downloads").then(d => { dl = d; if(d) $("bkFile").hidden = false; }).catch(() => {}); }catch(e){}
 if(!IN_CLAUDE) $("bkFile").hidden = false;
-$("hint").textContent = HINT;
+refreshHint();
 if(!AI_ON){
   $("nextCap").innerHTML = "문장 정리 없이 적은 내용 그대로 담아요<br>줄임말과 자주 틀리는 띄어쓰기는 알아서 고쳐요";
   $("aiLabel").textContent = "자동으로 채우기";
