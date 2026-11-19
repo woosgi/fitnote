@@ -1260,6 +1260,16 @@ const hmOf = t => { const d = new Date(t); return `${String(d.getHours()).padSta
 data.journals.forEach(j => { if(!j.time) j.time = SAMPLE_TIMES[j.id] || (j.updatedAt ? hmOf(j.updatedAt) : ""); });
 data.members.forEach(m => { if(m.memo === undefined) m.memo = m.id === 1 ? "오른쪽 어깨 조심. 통증 나오면 바로 멈추기\n다음 수업에 풀다운 무게 조금 올려보기" : ""; });
 const IN_CLAUDE = typeof window.claude !== "undefined";   // Claude 안(연습용 링크)인지, 전용 주소인지
+const AI_URL = "";   // 핏노트 AI 서버 주소 (Cloudflare Worker)
+const BETA_CODE = (() => {   // 베타 링크의 ?code=… 를 한 번 받으면 기억해요
+  try{
+    const q = new URLSearchParams(location.search).get("code");
+    if(q){ localStorage.setItem("fitnote-code", q); history.replaceState(null, "", location.pathname); }
+    return q || localStorage.getItem("fitnote-code") || "";
+  }catch(e){ return ""; }
+})();
+const PROXY_ON = !IN_CLAUDE && !!AI_URL && !!BETA_CODE;
+const AI_ON = IN_CLAUDE || PROXY_ON;   // AI 정리를 쓸 수 있는지
 let booted = false;   // 앱이 다 뜬 뒤의 변경만 '수정 시각'으로 기록
 function persist(){
   if(booted) data._savedAt = Date.now();
@@ -1831,7 +1841,7 @@ function info(title, text){ $("infoTitle").textContent = title; $("infoText").in
    마이크를 누르면 바로 듣기 시작 → 말한 내용이 메모 칸에 이어서 적힘 → 30초가 되면 자동으로 멈춤 */
 let dict = null, recTimer = null, recLeft = 0;
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const HINT = IN_CLAUDE ? "30초만 적거나 말하면 나머지는 AI가 채워요" : "30초만 적거나 말하면 나머지는 앱이 정리해요";
+const HINT = AI_ON ? "30초만 적거나 말하면 나머지는 AI가 채워요" : "30초만 적거나 말하면 나머지는 앱이 정리해요";
 try{
   claude.use("dictation").then(d => {
     if(!d) return;
@@ -2159,7 +2169,24 @@ function rulesParts(j){
 }
 
 /* ===== AI ===== */
+// 전용 주소(GitHub Pages)에서는 핏노트 AI 서버(Cloudflare)를 거쳐 Claude Haiku를 써요. 열쇠는 서버에만 있어요.
+function proxyAI(){
+  return {json: async (prompt, opts) => {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 30000);
+    try{
+      const r = await fetch(AI_URL, {method:"POST", headers:{"Content-Type":"application/json"}, signal:ctl.signal,
+        body:JSON.stringify({code:BETA_CODE, prompt, tier:(opts && opts.modelTier) || "default"})});
+      if(!r.ok){ if(r.status === 401) aiNote = "베타 코드가 맞지 않아요"; else if(r.status === 429) aiNote = "AI 사용량이 잠시 많아요"; return null; }
+      const {text} = await r.json();
+      const m = String(text || "").match(/\{[\s\S]*\}/);
+      return m ? JSON.parse(m[0]) : null;
+    }catch(e){ return null; }
+    finally{ clearTimeout(t); }
+  }};
+}
+let aiNote = "";
 async function aiNS(){
+  if(!IN_CLAUDE) return PROXY_ON ? proxyAI() : null;
   try{ return await Promise.race([claude.use("sample"), new Promise(r => setTimeout(() => r(null), 4000))]); }
   catch(e){ return null; }
 }
@@ -2317,7 +2344,7 @@ function readyToGo(){
 }
 $("aiBtn").onclick = async () => {
   if(busy || !readyToGo()) return;
-  const j = current, done = setBusy($("aiBtn"), IN_CLAUDE ? "AI가 채우고 있어요…" : "정리하고 있어요…");
+  const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
   let p = null;
   try{ p = await aiParts(j); }catch(e){ p = null; }
   const usedAI = !!p;
@@ -2325,19 +2352,19 @@ $("aiBtn").onclick = async () => {
   j.ai = {...p, src:srcKey(j)}; persist();
   done(); if(current !== j) return;
   renderDraft();
-  if(!usedAI && IN_CLAUDE) toast("지금은 AI를 쓸 수 없어 기본 정리로 채웠어요");
+  if(!usedAI && AI_ON) toast((aiNote ? aiNote + " · " : "지금은 AI를 쓸 수 없어 ") + "기본 정리로 채웠어요");
   chime("done");
   setTimeout(() => $("draft").scrollIntoView({behavior:"smooth", block:"start"}), 50);
 };
 function renderDraft(){
   const j = current, box = $("draft");
-  if(!j || !j.ai){ box.innerHTML = ""; $("aiLabel").textContent = IN_CLAUDE ? "AI로 채우기" : "자동으로 채우기"; return; }
+  if(!j || !j.ai){ box.innerHTML = ""; $("aiLabel").textContent = AI_ON ? "AI로 채우기" : "자동으로 채우기"; return; }
   const d = j.ai, stale = d.src !== srcKey(j);
-  $("aiLabel").textContent = IN_CLAUDE ? "AI로 다시 채우기" : "다시 채우기";
+  $("aiLabel").textContent = AI_ON ? "AI로 다시 채우기" : "다시 채우기";
   const sec = (title, items, cls, key) => items && items.length ? `<div class="d-sec ${cls||""}"><h4>${title}</h4><ul>${items.map((t,i) => `<li contenteditable="true" data-dk="${key}" data-di="${i}">${esc(t)}</li>`).join("")}</ul></div>` : "";
   box.innerHTML = `<div class="draft">
-    <div class="d-head">${d.by === "ai" ? "✦ AI가 이렇게 채웠어요" : IN_CLAUDE ? "기본 정리로 채웠어요" : "✦ 이렇게 정리했어요"}</div>
-    ${stale ? `<div class="d-stale">메모가 바뀌었어요. 위의 '${IN_CLAUDE ? "AI로 다시 채우기" : "다시 채우기"}'를 누르면 새 메모로 다시 채워요.</div>` : ""}
+    <div class="d-head">${d.by === "ai" ? "✦ AI가 이렇게 채웠어요" : AI_ON ? "기본 정리로 채웠어요" : "✦ 이렇게 정리했어요"}</div>
+    ${stale ? `<div class="d-stale">메모가 바뀌었어요. 위의 '${AI_ON ? "AI로 다시 채우기" : "다시 채우기"}'를 누르면 새 메모로 다시 채워요.</div>` : ""}
     ${d.lead ? `<p class="d-lead" contenteditable="true" data-dk="lead">${esc(d.lead)}</p>` : ""}
     ${sec("오늘 한 운동", d.ex, "", "ex")}${sec("좋아진 점", d.good, "", "good")}${sec("주의할 점", d.warn, "warn", "warn")}
     ${sec("메모에서 찾은 과제 · 다음 단계에서 확인해요", d.hwMemo, "hw", "hwMemo")}
@@ -2368,7 +2395,7 @@ $("nextBtn").onclick = async () => {
   const r = await plainCheck(j);
   done();
   if(r.ok) toast(r.changes || r.abbr ? "줄임말·맞춤법·존댓말을 정리했어요" : "고칠 곳 없이 깔끔했어요");
-  else toast(IN_CLAUDE ? "줄임말은 정리했어요 · 맞춤법 검사는 지금 쓸 수 없어요" : "줄임말과 띄어쓰기를 정리했어요");
+  else toast(AI_ON ? "줄임말은 정리했어요 · 맞춤법 검사는 지금 쓸 수 없어요" : "줄임말과 띄어쓰기를 정리했어요");
   j.mode = "plain"; persist(); openHw(j);
 };
 
@@ -2960,7 +2987,7 @@ let dl = null;
 try{ claude.use("downloads").then(d => { dl = d; if(d) $("bkFile").hidden = false; }).catch(() => {}); }catch(e){}
 if(!IN_CLAUDE) $("bkFile").hidden = false;
 $("hint").textContent = HINT;
-if(!IN_CLAUDE){
+if(!AI_ON){
   $("nextCap").innerHTML = "문장 정리 없이 적은 내용 그대로 담아요<br>줄임말과 자주 틀리는 띄어쓰기는 알아서 고쳐요";
   $("aiLabel").textContent = "자동으로 채우기";
 }
@@ -3110,7 +3137,7 @@ function renderOnboard(){
      <ul class="ob-flow">
        <li><b>1</b>회원 이름 누르기</li>
        <li><b>2</b>키워드 몇 개 + 한 줄 메모 (말로 해도 돼요)</li>
-       <li><b>3</b>${IN_CLAUDE ? "'AI로 채우기'" : "'자동으로 채우기'"} 누르면 일지 완성</li>
+       <li><b>3</b>${AI_ON ? "'AI로 채우기'" : "'자동으로 채우기'"} 누르면 일지 완성</li>
        <li><b>4</b>회원에게 보내기</li>
      </ul>`,
     `<div class="ob-ic">${IC.learn}</div>
