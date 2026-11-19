@@ -1260,7 +1260,7 @@ const hmOf = t => { const d = new Date(t); return `${String(d.getHours()).padSta
 data.journals.forEach(j => { if(!j.time) j.time = SAMPLE_TIMES[j.id] || (j.updatedAt ? hmOf(j.updatedAt) : ""); });
 data.members.forEach(m => { if(m.memo === undefined) m.memo = m.id === 1 ? "오른쪽 어깨 조심. 통증 나오면 바로 멈추기\n다음 수업에 풀다운 무게 조금 올려보기" : ""; });
 const IN_CLAUDE = typeof window.claude !== "undefined";   // Claude 안(연습용 링크)인지, 전용 주소인지
-const AI_URL = "";   // 핏노트 AI 서버 주소 (Cloudflare Worker)
+const AI_URL = "https://fitnote-ai.dntjr76059563-dc8.workers.dev/";   // 핏노트 AI 서버 주소 (Cloudflare Worker)
 const BETA_CODE = (() => {   // 베타 링크의 ?code=… 를 한 번 받으면 기억해요
   try{
     const q = new URLSearchParams(location.search).get("code");
