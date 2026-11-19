@@ -2176,11 +2176,15 @@ function proxyAI(){
     try{
       const r = await fetch(AI_URL, {method:"POST", headers:{"Content-Type":"application/json"}, signal:ctl.signal,
         body:JSON.stringify({code:BETA_CODE, prompt, tier:(opts && opts.modelTier) || "default"})});
-      if(!r.ok){ if(r.status === 401) aiNote = "베타 코드가 맞지 않아요"; else if(r.status === 429) aiNote = "AI 사용량이 잠시 많아요"; return null; }
-      const {text} = await r.json();
+      if(!r.ok){
+        let e = ""; try{ e = (await r.json()).error || ""; }catch(_){}
+        aiNote = r.status === 401 ? "베타 코드가 맞지 않아요" : r.status === 429 ? "AI 사용량이 잠시 많아요" : `AI 서버 오류(${r.status}${e ? " · " + e : ""})`;
+        return null;
+      }
+      let text = ""; try{ text = (await r.json()).text; }catch(_){ aiNote = "AI 서버 코드가 아직 예전 것이에요"; return null; }
       const m = String(text || "").match(/\{[\s\S]*\}/);
       return m ? JSON.parse(m[0]) : null;
-    }catch(e){ return null; }
+    }catch(e){ if(!aiNote) aiNote = "AI 서버에 연결하지 못했어요"; return null; }
     finally{ clearTimeout(t); }
   }};
 }
@@ -2344,7 +2348,7 @@ function readyToGo(){
 }
 $("aiBtn").onclick = async () => {
   if(busy || !readyToGo()) return;
-  const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
+  aiNote = ""; const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
   let p = null;
   try{ p = await aiParts(j); }catch(e){ p = null; }
   const usedAI = !!p;

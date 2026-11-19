@@ -54,7 +54,10 @@ export default {
         messages: [{ role: "user", content: prompt }],
       }),
     });
-    if (!r.ok) return reply({ error: "ai " + r.status }, 502, origin);
+    if (!r.ok) {
+      let msg = ""; try { msg = (await r.json()).error?.message || ""; } catch {}
+      return reply({ error: "Anthropic " + r.status + (msg ? ": " + msg.slice(0, 120) : "") }, 502, origin);
+    }
     const data = await r.json();
     const text = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
     return reply({ text }, 200, origin);
