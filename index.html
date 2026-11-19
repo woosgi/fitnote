@@ -1264,7 +1264,7 @@ const AI_URL = "https://fitnote-ai.dntjr76059563-dc8.workers.dev/";   // 핏노�
 const BETA_CODE = (() => {   // 베타 링크의 ?code=… 를 한 번 받으면 기억해요
   try{
     const q = new URLSearchParams(location.search).get("code");
-    if(q){ localStorage.setItem("fitnote-code", q); history.replaceState(null, "", location.pathname); }
+    if(q) localStorage.setItem("fitnote-code", q);   // 주소에 남겨 둬요: 아이폰 홈 화면 앱은 저장 공간이 따로라, 홈 화면에 추가할 때 주소로 코드를 넘겨요
     return q || localStorage.getItem("fitnote-code") || "";
   }catch(e){ return ""; }
 })();
