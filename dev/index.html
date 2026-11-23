@@ -115,6 +115,8 @@
   .r-meta{font-size:14px;color:var(--mint-dark);font-weight:500}
   .r-title{font-size:27px;font-weight:700;letter-spacing:-0.6px;line-height:1.35;margin-top:6px}
   .r-lead{margin-top:16px;font-size:17px;line-height:1.75;color:var(--ink2)}
+  .r-close{margin-top:28px}
+  .d-close{margin-top:14px}
   .r-part{margin-top:26px;border-radius:18px;background:var(--mint-soft);padding:18px 20px;display:flex;gap:14px;align-items:center}
   .r-part .ic{width:44px;height:44px;border-radius:12px;background:var(--surface);display:flex;align-items:center;justify-content:center;color:var(--mint);flex:none}
   .r-part b{display:block;font-size:16px}
@@ -2169,6 +2171,7 @@ function buildResult(j, parts){
     title: L.title(m.name, sessionNo(j)),
     meta: `${d.getMonth()+1}월 ${d.getDate()}일 ${DAYS[d.getDay()]}요일 · ${part}`,
     lead: parts.lead,
+    closing: parts.closing || "",
     part: j.part,
     muscles: targetMuscles(j),
     by: parts.by,
@@ -2425,12 +2428,39 @@ function styleOn(){
     !!stData().profile && !!stData().on;
 }
 function styleP(){ return styleOn() ? stData().profile : null; }
-function styleTone(){   // 카드의 경어도가 앱 설정보다 우선이에요
+function styleTone(){   // 카드의 경어도가 앱 설정보다 우선이에요: formal · soft · mixed · casual
   const p = styleP();
   const g = p ? String(p["경어도"] || "") : "";
+  if(g.includes("반말")) return "casual";          // "편한 반말"
+  if(g.includes("섞")) return "mixed";             // "해요체·합니다체 섞어 씀" — '합니다'가 들어 있어도 섞어 쓰기로
   if(g.includes("합니다")) return "formal";
   if(g.includes("해요")) return "soft";
   return S.tone === "formal" ? "formal" : "soft";
+}
+// 프롬프트에 넣을 말투 설명
+function toneDesc(){
+  const k = styleTone();
+  if(k === "formal") return "합니다체(예: 진행했습니다, 좋아졌습니다)";
+  if(k === "casual") return "편한 반말(예: 오늘 하체 했어, 자세 많이 좋아졌어). 존댓말로 바꾸지 마";
+  if(k === "mixed") return "해요체와 합니다체를 섞은 말투(예: 오늘은 하체 위주로 진행했습니다. 자세가 많이 좋아졌어요!). 한 가지로 통일하지 말고 [원문 예시]처럼 문장마다 자연스럽게 섞어";
+  return "해요체(예: 진행했어요, 좋아졌어요)";
+}
+// 카드의 '문장 길이'로 첫 문단 길이를 정해요 (카드가 없으면 기본 2~3문장)
+function styleLen(){
+  const p = styleP(), L = p ? String(p["문장_길이"] || "") : "";
+  if(L.includes("짧")) return {lead:"1~2문장. 한 문장은 25자 안팎으로 짧게 끊어 써", max:90, exWhy:false};
+  if(L.includes("길")) return {lead:"3~4문장", max:260, exWhy:true};
+  if(L.includes("중간")) return {lead:"2~3문장", max:170, exWhy:true};
+  return {lead:"2~3문장", max:200, exWhy:true};
+}
+// 카드에 잡힌 인사·단골 멘트
+function styleGreets(){ const p = styleP(); return p ? arrOfStr(p["인사_단골멘트"]) : []; }
+const arrOfStr = a => Array.isArray(a) ? a.map(x => String(x).trim()).filter(Boolean) : [];
+// 인사·마무리 멘트처럼 보이는 줄 (좋아진 점·주의할 점에 끼어들면 빼서 마무리로 옮겨요)
+function isGreetLine(t){
+  const k = sameKey(t); if(!k) return false;
+  if(styleGreets().some(g => { const gk = sameKey(g); return gk.length >= 4 && (k === gk || k.includes(gk) || gk.includes(k)); })) return true;
+  return t.length <= 25 && !/\d/.test(t) && /^(오늘도\s*)?(고생|수고)|푹\s?쉬|좋은\s?(하루|밤|저녁|주말)|화이팅|파이팅|(식단|물).{0,8}챙겨/.test(t);
 }
 function stylePrompt(){
   const p = styleP(); if(!p) return "";
@@ -2510,7 +2540,8 @@ const arrOf = a => Array.isArray(a) ? a.map(x => String(x).trim()).filter(Boolea
 async function aiParts(j){
   const m = member(j.memberId);
   const honor = typeof styleHonor === "function" ? styleHonor(m) : callName(m.name) + "님";
-  const tone = styleTone() === "formal" ? "합니다체(예: 진행했습니다, 좋아졌습니다)" : "해요체(예: 진행했어요, 좋아졌어요)";
+  const tone = toneDesc();
+  const len = styleLen(), greets = styleGreets(), closingOn = greets.length > 0;
   const history = prevJournals(j, 3).map(p => `- ${fmtMD(p.date)} (${p.part || "부위 미정"}) ${summaryOf(p)}`).join("\n") || "(이번이 첫 기록)";
   const exList = todaysEx(j).map(e => `${e.name}(${e.part} · ${EXDB[e.part].subs[e.sub][0]})`).join(", ");
   const organized = organizeMemo(j).ex.join(" / ") || "(없음)";
@@ -2533,21 +2564,29 @@ async function aiParts(j){
 ${memoText || "(없음)"}
 ${style}`;
   const head = core + `\n[오늘 ${sessionNo(j) || ""}회차 · 지난 수업 기록]\n${history}\n`;
+  // 첫 문단: 규칙을 상황에 맞게 골라서 번호를 매겨요
+  const leadRules = [
+    `${len.lead}. 오늘 무엇을 중심으로 운동했는지, 오늘 잘한 점이나 눈에 띈 점을 메모에 적힌 만큼만 써. 지난 수업과 이어지는 흐름이 기록에 있으면 한 구절로 섞어도 돼.`,
+    `메모나 [트레이너가 고른 포인트]에 없는 운동 효능, 근육 해설, "이 운동이 왜 도움이 되는지" 같은 교과서식 설명은 지어내지 마. 메모에 근거가 있을 때만 짧게.`,
+    `"${honor}"을 한 번만 넣어. 사람이 카톡으로 보내는 말투(${tone})로.`,
+    style ? `길이와 호흡은 [내 말투 프로필]의 문장 길이와 [원문 예시]를 최우선으로 따라. 원문 예시보다 길게 늘이지 마.` : "",
+    closingOn ? `[내 말투 프로필]의 인사·단골 멘트는 자리가 정해져 있어. 시작 인사(예: 고생 많으셨습니다!)는 lead의 첫 문장으로, 마무리 멘트(예: 푹 쉬세요, 식단 잘 챙겨 드세요)는 closing 한 문장으로 써. 프로필에 적힌 표현을 그대로 쓰고, 같은 멘트를 두 번 쓰지 마. 어울리는 마무리가 없으면 closing은 빈 문자열.` : "",
+    `쓰지 말 것: "~를 통해", "효과적으로", "도움이 될 것입니다", "중요합니다", "여정", "꾸준한 노력의 결과", "훌륭한", 번역투${style ? "" : ", 느낌표 남발"}.`,
+    noFake,
+    `띄어쓰기를 정확히. 보조 용언은 띄어 써(해 주세요, 해 보세요). 단위는 숫자에 붙여(5kg, 3세트). "키로"는 "kg".`,
+    styleRule || "이모지 쓰지 마.",
+    S.jlang !== "ko" ? `${lang[2]}로 써.` : ""
+  ].filter(Boolean);
   const leadPrompt = head +
 `
-첫 문단(lead)만 써.
-1. 3문장. ① 오늘 무엇을 중심으로 운동했는지 ② 그 부위·운동이 회원의 목표에 왜 도움이 되는지 ③ 오늘 잘한 점이나 눈에 띈 점. 지난 수업과 이어지는 흐름은 한 문장 안에 자연스럽게 섞어도 돼.
-2. 첫 문장에 "${honor}"을 한 번만 넣어. 사람이 카톡으로 보내는 말투(${tone})로.
-3. 쓰지 말 것: "~를 통해", "효과적으로", "도움이 될 것입니다", "중요합니다", "여정", "꾸준한 노력의 결과", "훌륭한", 느낌표 남발, 번역투.
-4. ${noFake}
-5. 띄어쓰기를 정확히. 보조 용언은 띄어 써(해 주세요, 해 보세요). 단위는 숫자에 붙여(5kg, 3세트). "키로"는 "kg".
-${emoRule}
-${S.jlang !== "ko" ? `7. ${lang[2]}로 써.\n` : ""}200자 안으로 짧게.
-JSON만 답해: {"lead":""}`;
+첫 문단(lead)${closingOn ? "과 마무리 멘트(closing)" : ""}만 써.
+${leadRules.map((t, i) => `${i + 1}. ${t}`).join("\n")}
+lead는 ${len.max}자 안으로.
+JSON만 답해: ${closingOn ? '{"lead":"","closing":""}' : '{"lead":""}'}`;
   const exPrompt = core +
 `
 운동 목록(exercises)만 써.
-1. 오늘 한 운동마다 한 항목. "운동 이름과 기록 — 이 운동이 어디에 좋은지 20자 안팎" 형식.
+1. 오늘 한 운동마다 한 항목. ${len.exWhy ? '"운동 이름과 기록 — 이 운동이 어디에 좋은지 20자 안팎" 형식. 설명은 메모·타겟 부위에 맞는 한 구절만, 길게 늘이지 마.' : '"운동 이름과 기록"만. 효능 설명은 붙이지 마(이 트레이너는 짧게 끊어 써).'}
 2. [운동 기록 정리본]의 기록 형식을 그대로 써. ${noFake}
 3. 메모에 구체적인 운동 이름이 없으면 운동을 지어내지 말고, 타겟 부위 설명 항목 1개만.
 4. 말투: ${tone}. 짧게.
@@ -2559,7 +2598,7 @@ JSON만 답해: {"exercises":[]}`;
 1. good: 메모 속 성과(증량, 성공, 자세 개선, 통증 없음 등)를 메모에 적힌 수치 그대로 살려 한 문장. 성과가 없으면 빈 배열.
 2. caution: 메모에 불편·통증·조심·주의가 있을 때만 한 문장. 없으면 빈 배열.
 3. homework_in_memo: 메모에서 트레이너가 "해 오라고" 한 과제만, 과제 하나당 한 항목. "다음 시간까지", "꼭", "~해 주세요"는 빼고 무엇을 얼마나 할지만. 횟수는 "5회 × 5세트" 형식. 새 과제를 만들지 마. 없으면 빈 배열.
-4. ${noFake} 과제 내용을 good·caution에 넣지 마.
+4. ${noFake} 과제 내용을 good·caution에 넣지 마. 인사·마무리 멘트(고생 많으셨어요, 푹 쉬세요, 식단 챙기세요 등)도 good·caution·과제에 넣지 마.
 5. 말투: ${tone}.
 ${emoRule}
 항목마다 한 문장씩, 짧게.
@@ -2586,15 +2625,20 @@ JSON만 답해: {"good":[],"caution":[],"homework_in_memo":[]}`;
     good = arrOf(v3 && v3.good); warn = arrOf(v3 && v3.caution); hw = arrOf(v3 && v3.homework_in_memo);
     if(!v3){ notes.push("좋아진 점·주의할 점은 AI가 못 채워서 비워 뒀어요 (" + (s3.err || "응답 없음") + ")"); hw = detectHw(j); }
   }
-  let out = {lead:String(v1.lead).trim(), ex, good, warn, hwMemo:hw,
+  // 좋아진 점·주의할 점에 끼어든 인사 멘트는 빼서 마무리로
+  const strayGreet = [...good, ...warn].filter(isGreetLine);
+  good = good.filter(t => !isGreetLine(t)); warn = warn.filter(t => !isGreetLine(t));
+  let closing = String((v1 && v1.closing) || "").trim() || (strayGreet.length ? strayGreet[strayGreet.length - 1] : "");
+  if(closing && sameKey(String(v1.lead)).includes(sameKey(closing))) closing = "";   // 첫 문단과 같은 멘트면 한 번만
+  let out = {lead:String(v1.lead).trim(), ex, good, warn, closing, hwMemo:hw,
     by:"ai", lang:S.jlang, tone:!!styleP(), partial:notes.join(" · ")};
   if(S.jlang === "ko"){
     // 2차 검수: 맞춤법 검사 → 자주 틀리는 띄어쓰기 자동 교정 (고칠 만한 분량이 없으면 건너뛰어요)
-    const all = [out.lead, ...out.ex, ...out.good, ...out.warn];
+    const all = [out.lead, ...out.ex, ...out.good, ...out.warn, ...(out.closing ? [out.closing] : [])];
     const pr = all.join("").length >= 30 ? await proofread(all).catch(() => null) : null;
     const fixed = (pr ? pr.lines : all).map(localFix);
     let i = 0; const take = n => fixed.slice(i, i += n);
-    out = {...out, lead:take(1)[0], ex:take(out.ex.length), good:take(out.good.length), warn:take(out.warn.length)};
+    out = {...out, lead:take(1)[0], ex:take(out.ex.length), good:take(out.good.length), warn:take(out.warn.length), closing:out.closing ? take(1)[0] : ""};
   }
   return out;
 }
@@ -2647,7 +2691,7 @@ async function politeFix(lines){
   if(!lines.length) return {lines, changes:0};
   const sample = await aiNS();
   if(!sample) return null;
-  const tone = styleTone() === "formal" ? "합니다체(예: 성공했습니다, 해 오세요)" : "해요체(예: 성공했어요, 해 오세요)";
+  const tone = toneDesc(), casual = styleTone() === "casual";
   const style = typeof stylePrompt === "function" ? stylePrompt() : "";
   const styleRule = typeof styleRuleText === "function"
     ? "- 문장 끝과 호칭은 아래 [내 말투 프로필]을 따라. 내용은 그대로 두고 말투만 맞춰.\n" + styleRuleText() + (styleRuleText() ? "\n" : "")
@@ -2656,7 +2700,7 @@ async function politeFix(lines){
     const v = await sample.json(
 `아래는 트레이너가 회원에게 보낼 수업 메모야. 다음 세 가지만 고쳐.
 1. 띄어쓰기와 맞춤법
-2. 문장 끝을 회원에게 보내는 존댓말 ${tone}으로. 반말이나 메모체(예: "성공함", "좋아짐", "해와")도 존댓말로 바꿔.
+2. ${casual ? `문장 끝을 이 트레이너의 말투인 ${tone}로. 메모체(예: "성공함", "좋아짐")는 "성공했어", "좋아졌어"처럼 자연스러운 반말로.` : `문장 끝을 회원에게 보내는 존댓말 ${tone}으로. 반말이나 메모체(예: "성공함", "좋아짐", "해와")도 존댓말로 바꿔.`}
 3. "키로"는 "kg"으로.
 - 단어, 내용, 어순은 바꾸지 마. 문장을 더하거나 빼거나 합치지 마. 사람 이름과 숫자는 그대로.
 - 입력과 같은 개수, 같은 순서로.
@@ -2737,6 +2781,7 @@ function renderDraft(){
     ${why}${soft}
     ${d.lead ? `<p class="d-lead" contenteditable="true" data-dk="lead">${esc(d.lead)}</p>` : ""}
     ${sec("오늘 한 운동", d.ex, "", "ex")}${sec("좋아진 점", d.good, "", "good")}${sec("주의할 점", d.warn, "warn", "warn")}
+    ${d.closing ? `<p class="d-lead d-close" contenteditable="true" data-dk="closing">${esc(d.closing)}</p>` : ""}
     ${sec("메모에서 찾은 과제 · 다음 단계에서 확인해요", d.hwMemo, "hw", "hwMemo")}
     <button class="primary" id="draftNext">이대로 다음 단계 →</button>
     <p class="d-cap">✎ 글자를 눌러 바로 고칠 수 있어요</p>
@@ -2745,12 +2790,12 @@ function renderDraft(){
   box.querySelectorAll("[data-dk]").forEach(el => {
     el.oninput = () => {
       const k = el.dataset.dk, v = el.innerText.trim();
-      if(k === "lead") d.lead = v; else d[k][Number(el.dataset.di)] = v;
+      if(k === "lead" || k === "closing") d[k] = v; else d[k][Number(el.dataset.di)] = v;
       persist();
     };
     el.onblur = () => {
       const k = el.dataset.dk;
-      if(k !== "lead" && d[k].some(x => !x)){ d[k] = d[k].filter(Boolean); persist(); renderDraft(); }   // 비운 항목은 빼기
+      if(k !== "lead" && k !== "closing" && d[k].some(x => !x)){ d[k] = d[k].filter(Boolean); persist(); renderDraft(); }   // 비운 항목은 빼기
     };
   });
   $("draftNext").onclick = () => {
@@ -2941,6 +2986,7 @@ function renderResult(scrollToVideo){
       </div>` : ""}
     ${sectionsHTML(r, ed)}
     ${ed && !r.sections.some(x => x.key === "hw") ? `<button class="add-item" id="addHwSec" style="margin:24px 0 0">+ 다음 수업까지 하면 좋은 것 추가</button>` : ""}
+    ${r.closing ? `<p class="r-lead r-close ${ed ? "editable" : ""}" ${ce} data-f="closing">${esc(r.closing)}</p>` : ""}
     ${r.prev ? `<div class="sec"><h2>${esc(r.prev.label)}</h2><div class="prev">${esc(r.prev.text)}</div></div>` : ""}
     ${ed ? `<button class="text-btn memo-again" id="memoAgain">메모부터 다시 쓰기 →</button>` : ""}
     <p class="edit-tip">${ed ? "다 고쳤으면 오른쪽 위 '완료'를 눌러 주세요" : (r.by === "ai" ? "✦ AI가 메모와 지난 기록을 읽고 정리했어요 · " : "") + "오른쪽 위 '수정하기'로 고칠 수 있어요"}</p>`;
@@ -2959,7 +3005,7 @@ function renderResult(scrollToVideo){
 }
 $("rBody").addEventListener("input", e => {
   const el = e.target, r = viewing.result;
-  if(el.dataset.f === "lead") r.lead = el.innerText.trim();
+  if(el.dataset.f === "lead" || el.dataset.f === "closing") r[el.dataset.f] = el.innerText.trim();
   else if(el.dataset.s){
     const s = r.sections[el.dataset.s];
     s.items[el.dataset.i] = el.innerText.trim();
@@ -2988,6 +3034,7 @@ $("rEdit").onclick = () => {
 function plainText(r){
   let t = `[${r.title}]\n${r.meta}\n${r.lead ? `\n${r.lead}\n` : ""}`;
   r.sections.forEach(s => { if(s.items.filter(Boolean).length) t += `\n${emo(s.key)} ${s.title}\n` + s.items.filter(Boolean).map(i => `· ${i}`).join("\n") + "\n"; });
+  if(r.closing) t += `\n${r.closing}\n`;
   if(signature()) t += `\n— ${signature()}`;
   return t.trim();
 }
@@ -3014,7 +3061,8 @@ function openShare(){
     ${sectionsHTML(rest, false)}
     ${hw && hw.items.length ? `<div class="sec"><h2>${esc(hw.title)}</h2>
       ${hw.items.filter(Boolean).map((it,i) => `<label class="todo"><input type="checkbox"><span>${esc(it)}</span></label>`).join("")}</div>` : ""}
-    <div class="s-foot">${signature() ? esc(signature()) + "<br>" : ""}궁금한 점은 ${data.settings.trainer ? esc(data.settings.trainer) + " 트레이너에게" : "담당 트레이너에게"} ${S.tone === "formal" ? "편하게 문의해 주십시오" : "편하게 물어보세요"}</div>`;
+    ${r.closing ? `<p class="r-lead r-close">${esc(r.closing)}</p>` : ""}
+    <div class="s-foot">${signature() ? esc(signature()) + "<br>" : ""}궁금한 점은 ${data.settings.trainer ? esc(data.settings.trainer) + " 트레이너에게" : "담당 트레이너에게"} ${{formal:"편하게 문의해 주십시오", casual:"편하게 물어봐"}[styleTone()] || "편하게 물어보세요"}</div>`;
   $("share").hidden = false; $("share").scrollTop = 0;
   bindVideos($("sBody"), j, false);
 }
@@ -3531,7 +3579,9 @@ function analyzeLocal(samples){
   const talk = sents.filter(s => !isWorkLine(s));
   const ends = talk.map(stripTail).filter(Boolean);
   const yo = ends.filter(s => /요$/.test(s)).length, da = ends.filter(s => /(니다|니까)$/.test(s)).length;
-  P["경어도"] = yo + da < 2 ? null : yo >= da * 3 ? "부드러운 해요체" : da >= yo * 3 ? "깔끔한 합니다체" : "해요체·합니다체 섞어 씀";
+  const bm = ends.filter(s => !/(요|니다|니까|죠)$/.test(s) && /(어|아|해|야|지|자|냐|거든|잖아|했다|한다|됐다|봐|줘|와|네)$/.test(s)).length;
+  P["경어도"] = yo + da + bm < 2 ? null : bm >= 2 && bm >= yo + da ? "편한 반말" : yo + da < 2 ? null
+    : yo >= da * 3 ? "부드러운 해요체" : da >= yo * 3 ? "깔끔한 합니다체" : "해요체·합니다체 섞어 씀";
   // 끝맺음 습관
   const cnt = {};
   ends.forEach(s => { const w = s.split(/\s+/).pop(); if(!w) return; for(const k of [5,4,3]) if(w.length >= k){ const suf = w.slice(-k); cnt[suf] = (cnt[suf] || 0) + 1; } });
@@ -3593,7 +3643,7 @@ function analyzeLocal(samples){
     P["피드백_어조"] = {칭찬:a, 독려:b, 자세교정:Math.max(0, 100 - a - b)};
   }
   // 이 사람이 안 쓸 말투
-  P["금지할_느낌"] = !P["경어도"] ? null : P["경어도"].includes("해요") ? "'~하시기 바랍니다', '~입니다' 같은 딱딱한 보고서 말투" + (totalE ? "" : ", 이모지") : P["경어도"].includes("합니다") ? "'ㅋㅋ'나 반말 같은 가벼운 말투" : null;
+  P["금지할_느낌"] = !P["경어도"] ? null : P["경어도"].includes("해요") ? "'~하시기 바랍니다', '~입니다' 같은 딱딱한 보고서 말투" + (totalE ? "" : ", 이모지") : P["경어도"].includes("반말") ? "'~하시기 바랍니다', '~입니다' 같은 딱딱한 존댓말" : P["경어도"].includes("합니다") && !P["경어도"].includes("섞") ? "'ㅋㅋ'나 반말 같은 가벼운 말투" : null;
   // 원문 예시 3개: 말투가 잘 드러나는 문장, 서로 다른 일지에서
   const scored = [];
   texts.forEach((t, i) => stSentences(t).forEach(s => {
@@ -3714,7 +3764,7 @@ function clearStImgs(){ stImgs.forEach(u => URL.revokeObjectURL(u.url)); stImgs 
 // --- 내 말투 카드 ---
 const SC_FIELDS = [
   {k:"칭호_호칭", t:"opt", label:"호칭", opts:["회원님","이름+님 (예: 민수님)"], free:true},
-  {k:"경어도", t:"opt", label:"말투", opts:["부드러운 해요체","깔끔한 합니다체","해요체·합니다체 섞어 씀"]},
+  {k:"경어도", t:"opt", label:"말투", opts:["부드러운 해요체","깔끔한 합니다체","해요체·합니다체 섞어 씀","편한 반말"]},
   {k:"종결_습관", t:"tags", label:"자주 쓰는 끝맺음", ph:"예) ~해 보았어요"},
   {k:"인사_단골멘트", t:"tags", label:"자주 쓰는 인사 · 단골 멘트", ph:"예) 오늘도 고생 많으셨어요"},
   {k:"이모지", t:"emoji", label:"이모지"},
@@ -3943,7 +3993,15 @@ function chime(kind){
 
 // 합니다체 변환 (규칙 기반 문장용)
 const FORMAL = [["했어요","했습니다"],["였어요","였습니다"],["졌어요","졌습니다"],["렸어요","렸습니다"],["됐어요","되었습니다"],["있어요","있습니다"],["없어요","없습니다"],["해요","합니다"],["돼요","됩니다"],["주세요","주십시오"],["셨어요","셨습니다"],["보였어요","보였습니다"]];
-const toTone = t => S.tone === "formal" ? FORMAL.reduce((a,[x,y]) => a.split(x).join(y), t) : t;
+// 해요체 → 반말 (자주 나오는 끝맺음만)
+const BANMAL = [[/아니에요/g,"아니야"],[/하셨어요/g,"했어"],[/셨어요/g,"셨어"],[/해 주세요/g,"해 줘"],[/주세요/g,"줘"],[/해 오세요/g,"해 와"],[/오세요/g,"와"],
+  [/보세요/g,"봐"],[/하세요/g,"해"],[/쉬세요/g,"쉬어"],[/드세요/g,"먹어"],[/이에요/g,"이야"],[/예요/g,"야"],[/([가-힣])(?<!세)요(?=[\s.!?~,)]|$)/g,"$1"]];
+const toTone = t => {
+  const k = typeof styleTone === "function" ? styleTone() : (S.tone === "formal" ? "formal" : "soft");
+  if(k === "formal") return FORMAL.reduce((a,[x,y]) => a.split(x).join(y), t);
+  if(k === "casual") return BANMAL.reduce((a,[x,y]) => a.replace(x, y), t);
+  return t;   // soft · mixed는 해요체 그대로 (섞는 건 AI 쪽에서)
+};
 
 /* ===== 클라우드 저장: 우석님 Claude 계정에 (본인만 보임) =====
    휴대폰 브라우저 임시 저장은 홈 화면 앱으로 열면 지워질 수 있어서, 계정 저장을 기본으로 씀.
