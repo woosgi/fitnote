@@ -321,6 +321,7 @@
   .fb-btns{flex:none;display:flex;gap:6px;margin-top:1px}
   .fb-btn{font-size:12px;font-weight:700;color:var(--mint-dark);background:var(--mint-soft);border-radius:8px;padding:7px 10px;white-space:nowrap}
   .fb-btn.alt{color:var(--ink2);background:var(--bg2)}
+  .fb-mail{margin-top:8px;width:100%;height:50px;border-radius:14px;border:1.5px solid var(--line);color:var(--ink);font-size:15px;font-weight:700}
   .panel.doc{background:var(--surface);border-radius:18px;padding:6px 20px 22px}
   .panel.doc h3{font-size:15px;font-weight:700;margin-top:18px}
   .panel.doc p{font-size:14px;line-height:1.75;color:var(--ink2);margin-top:6px}
@@ -857,8 +858,9 @@
           <div class="seg wide" id="segFb"><button data-v="문의">문의하기</button><button data-v="버그">버그 신고</button><button data-v="제안">기능 제안</button></div>
           <textarea id="fbText" class="fb-text" placeholder=""></textarea>
           <button class="primary" id="fbSend" style="margin-top:12px">보내기</button>
+          <button class="fb-mail" id="fbMail">메일 보내기</button>
         </div>
-        <p class="panel-cap">보낸 내용은 이 휴대폰에 먼저 보관돼요. 아래 <b>복사</b>나 <b>공유</b>를 누르면 카톡·메일로 바로 보낼 수 있어요.</p>
+        <p class="panel-cap">보낸 내용은 이 휴대폰에 먼저 보관돼요. <b>메일 보내기</b>를 누르면 적은 내용과 기기 정보가 메일에 담겨 열려요. 아래 <b>복사</b>·<b>공유</b>로 카톡에서 보낼 수도 있어요.</p>
         <div class="group-h" id="fbListH" hidden>보낸 내역</div>
         <div class="card" id="fbList"></div>
       </div>
@@ -3356,7 +3358,28 @@ $("fbSend").onclick = () => {
   if(!text){ $("fbText").focus(); toast("내용을 적어 주세요"); return; }
   data.feedback.push({type:fbType, text, date:fmtMD(TODAY), device: navigator.userAgent.slice(0,120)});
   persist(); $("fbText").value = ""; renderFeedback(); chime("done");
-  toast("고마워요! 아래 '공유'나 '복사'로 카톡·메일에서 보내 주세요");
+  toast("고마워요! '메일 보내기'나 '공유'로 보내 주세요");
+};
+/* 문의 받는 메일 — 적은 내용과 기기 정보를 제목·본문에 담아 바로 열어 준다 */
+const INQ_MAIL = "dntjr76059563@gmail.com";
+function mailHref(){
+  const text = $("fbText").value.trim();
+  const body = [
+    `[핏노트 ${FB_NAME[fbType] || fbType}] ${TODAY}${data.settings.trainer ? " · " + data.settings.trainer + " 트레이너" : ""}`,
+    "",
+    text || "(여기에 문의 내용을 적어 주세요)",
+    "",
+    "──────────",
+    "기기: " + ((navigator.userAgent || "알 수 없음").slice(0, 160)),
+    "앱 버전: 베타 0.1"
+  ].join("\n");
+  return "mailto:" + INQ_MAIL
+    + "?subject=" + encodeURIComponent("[핏노트 " + (FB_NAME[fbType] || fbType) + "] " + (text ? text.slice(0, 30).replace(/\s+/g, " ") : "문의드려요"))
+    + "&body=" + encodeURIComponent(body);
+}
+$("fbMail").onclick = () => {
+  try{ location.href = mailHref(); toast("메일 앱이 열려요 · 보내기를 눌러 주세요"); }
+  catch(e){ copyText(mailHref()); }
 };
 
 /* --- 백업 및 복원 ---
@@ -3449,7 +3472,7 @@ $("panel-privacy").innerHTML = DOC_NOTE + `
 <h3>4. AI 처리</h3><p>'AI로 채우기'를 누르면 일지 정리를 위해 해당 수업의 메모와 최근 수업 기록이 AI(Anthropic Claude)로 전송돼요. 이때 핏노트 AI 서버(Cloudflare Worker)를 거쳐 가며, 서버는 메모 내용을 저장하지 않고 전달만 해요. 일지 정리 외의 목적으로 쓰이지 않아요. 베타 기간에는 베타 코드를 받은 사람만 AI를 쓸 수 있어요.</p>
 <h3>5. 민감정보</h3><p>통증·부상 같은 건강 관련 내용은 법적으로 민감정보에 해당할 수 있어요. 꼭 필요한 내용만 적고, 회원의 별도 동의를 받아 주세요.</p>
 <h3>6. 삭제</h3><p>회원 정보와 기록은 회원 페이지의 '편집 → 회원 삭제'로 언제든 지울 수 있어요.</p>
-<h3>7. 문의</h3><p>설정 → 고객센터에 적어 주세요. 적은 내용은 기기에 보관되고, '복사'나 '공유'로 카톡·메일로 보내 주시면 확인해요.</p>`;
+<h3>7. 문의</h3><p>설정 → 고객센터에 적어 주세요. 적은 내용은 기기에 보관되고, <b>메일 보내기</b>를 누르면 적은 내용과 기기 정보가 메일로 열려요(dntjr76059563@gmail.com). '복사'나 '공유'로 카톡에서 보내도 확인해요.</p>`;
 
 /* ===== 내 말투 학습 (1단계: 학습 목록 + 말투 카드 + 앱 규칙 분석) ===== */
 const STYLE_FEATURE = DEV;   // 완성 전까지 개발용 주소에서만 보여요
