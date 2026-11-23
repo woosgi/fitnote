@@ -19,8 +19,8 @@ function cors(origin) {
     "Vary": "Origin",
   };
 }
-const reply = (body, status, origin) =>
-  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors(origin) } });
+const reply = (body, status, origin, extra) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...cors(origin), ...(extra || {}) } });
 
 export default {
   async fetch(req, env) {
@@ -38,7 +38,10 @@ export default {
     // 간단한 사용량 제한
     const ip = req.headers.get("CF-Connecting-IP") || "?";
     const now = Date.now(), list = (hits.get(ip) || []).filter(t => now - t < 3600e3);
-    if (list.length >= PER_HOUR) return reply({ error: "slow down" }, 429, origin);
+    if (list.length >= PER_HOUR) {
+      const wait = Math.max(1, Math.ceil((3600e3 - (now - list[0])) / 1000));
+      return reply({ error: "slow down", retry_after: wait }, 429, origin, { "Retry-After": String(wait) });
+    }
     list.push(now); hits.set(ip, list);
 
     let r;
@@ -62,6 +65,8 @@ export default {
     }
     if (!r.ok) {
       let msg = ""; try { msg = (await r.json()).error?.message || ""; } catch {}
+      // AI 쪽 한도도 429로 그대로 알려서 앱이 "잠시 뒤에 다시"로 안내하게
+      if (r.status === 429) return reply({ error: "AI 쪽 요청 한도", retry_after: 60 }, 429, origin, { "Retry-After": "60" });
       return reply({ error: "Anthropic " + r.status + (msg ? ": " + msg.slice(0, 120) : "") }, 502, origin);
     }
     const data = await r.json();
@@ -73,6 +78,7 @@ export default {
       stop_reason: stop,
       truncated: stop === "max_tokens",
       empty: !text.trim(),
+      left: Math.max(0, PER_HOUR - list.length),
       usage: data.usage || null,
     }, 200, origin);
   },

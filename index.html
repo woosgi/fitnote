@@ -318,6 +318,9 @@
   .fb-item{align-items:flex-start}
   .fb-item .k{font-size:14px;line-height:1.5;white-space:pre-wrap}
   .fb-type{flex:none;font-size:11px;font-weight:700;color:var(--mint-dark);background:var(--mint-soft);border-radius:6px;padding:3px 6px;margin-top:2px}
+  .fb-btns{flex:none;display:flex;gap:6px;margin-top:1px}
+  .fb-btn{font-size:12px;font-weight:700;color:var(--mint-dark);background:var(--mint-soft);border-radius:8px;padding:7px 10px;white-space:nowrap}
+  .fb-btn.alt{color:var(--ink2);background:var(--bg2)}
   .panel.doc{background:var(--surface);border-radius:18px;padding:6px 20px 22px}
   .panel.doc h3{font-size:15px;font-weight:700;margin-top:18px}
   .panel.doc p{font-size:14px;line-height:1.75;color:var(--ink2);margin-top:6px}
@@ -753,7 +756,7 @@
           <textarea id="fbText" class="fb-text" placeholder=""></textarea>
           <button class="primary" id="fbSend" style="margin-top:12px">보내기</button>
         </div>
-        <p class="panel-cap">지금은 서버가 없어서 보낸 내용이 이 휴대폰에 보관돼요. 서버를 연결하면 자동으로 전달돼요.</p>
+        <p class="panel-cap">보낸 내용은 이 휴대폰에 먼저 보관돼요. 아래 <b>복사</b>나 <b>공유</b>를 누르면 카톡·메일로 바로 보낼 수 있어요.</p>
         <div class="group-h" id="fbListH" hidden>보낸 내역</div>
         <div class="card" id="fbList"></div>
       </div>
@@ -1286,6 +1289,18 @@ if(!data.sampleCleared){ const SN = {1:"김민수",2:"이서연",3:"박지훈",4
 if(!data.sampleCleared && !data.demoAdded){
   todaySamples().forEach(s => { if(data.members.some(m => m.id === s.memberId && m.sample) && !data.journals.some(j => j.id === s.id)) data.journals.push(s); });
   data.demoAdded = true;
+}
+/* 데모용 예시 수업 날짜 맞추기: 진짜 일지가 아직 없으면(샘플만 있으면) 예시 수업을 오늘 기준으로 옮겨요.
+   며칠 뒤에 친구에게 보여 줘도 홈에 오늘 수업이 비어 보이지 않게. */
+const SAMPLE_JID = /^[st]\d+$/;
+if(!data.sampleCleared && data.journals.length && !data.journals.some(j => !SAMPLE_JID.test(String(j.id)))){
+  const anchor = data.sampleDay || (data.journals.find(j => String(j.id) === "t1") || {}).date || "";
+  const gap = anchor ? Math.round((fromKey(TODAY) - fromKey(anchor)) / 86400000) : 0;
+  if(gap > 0) data.journals.forEach(j => {
+    if(!j.date || !SAMPLE_JID.test(String(j.id))) return;
+    const d = fromKey(j.date); d.setDate(d.getDate() + gap); j.date = keyOf(d);
+  });
+  data.sampleDay = TODAY;
 }
 data.journals.forEach(j => { if(j.part === "엉덩이") j.part = "하체"; });
 if(data.customPart) Object.keys(data.customPart).forEach(k => { if(data.customPart[k] === "엉덩이") data.customPart[k] = "하체"; });
@@ -2195,9 +2210,12 @@ function rulesParts(j){
     g[classify(p)].push(KW_SENT[p] || localFix(politeLocal(expandAbbr(p))));
   });
   g.ex = g.ex.filter((t,i,a) => !a.some((u,k) => k !== i && u.length > t.length && u.startsWith(t)));
+  g.ex = [...new Set(g.ex)]; g.warn = [...new Set(g.warn)];
   const top = g.ex.slice(0,2).map(t => t.split(" · ")[0].replace(/\s+\d.*$/, "")).join(", ");   // 운동 이름만
   const lead = g.ex.length
-    ? `오늘은 ${part} 위주로 ${top}${g.ex.length > 2 ? " 등을" : josa(top,"을","를")} 진행했어요.` + (g.good.length ? " 지난번보다 좋아진 부분이 보였어요." : "")
+    ? `오늘은 ${part} 위주로 ${top}${g.ex.length > 2 ? " 등을" : josa(top,"을","를")} 진행했어요.`
+      + (g.good.length ? " 지난번보다 좋아진 부분이 보였어요." : "")
+      + (!g.good.length && g.warn.length ? " 불편한 곳은 무리가 가지 않게 범위를 조절했어요." : "")
     : `오늘은 ${part} 위주로 수업했어요.`;
   const T = a => a.map(toTone);
   return {lead:toTone(lead), ex:g.ex, good:T(g.good), warn:T(g.warn), hwMemo:detectHw(j), by:"rules"};
@@ -2207,13 +2225,16 @@ function rulesParts(j){
 // 전용 주소(GitHub Pages)에서는 핏노트 AI 서버(Cloudflare)를 거쳐 Claude Haiku를 써요. 열쇠는 서버에만 있어요.
 let aiNote = "";   // AI를 못 쓸 때 화면에 그대로 보여 줄 실제 이유
 // 서버가 준 오류를 사람이 읽는 말로
-function aiStatusNote(status, e){
+function aiStatusNote(status, e, sec){
   const tail = e ? " · " + String(e).slice(0, 90) : "";
+  const wait = sec > 0 ? `약 ${sec < 90 ? sec + "초" : Math.round(sec / 60) + "분"} 뒤에 다시 눌러 주세요` : "1~2분 뒤에 다시 눌러 주세요";
+  // 예전 워커는 AI 쪽 429를 502로 감싸 보내서, 본문에 429가 있으면 같은 안내를 해요
+  if(status === 429 || /\b429\b|slow\s?down|rate.?limit/i.test(String(e || "")))
+    return "AI 요청이 잠시 많아요 · " + wait + " (한 시간에 쓸 수 있는 양을 넘었어요)";
   if(status === 401) return "베타 코드가 맞지 않아요";
   if(status === 403) return "이 주소에서는 AI 서버를 쓸 수 없어요 (핏노트 주소에서 열어 주세요)";
   if(status === 400) return "보낼 내용이 너무 길거나 형식이 맞지 않아요" + tail;
   if(status === 413) return "보낼 내용이 너무 길어요";
-  if(status === 429) return "AI 요청이 잠시 많아요 · 조금 뒤에 다시";
   return "AI 서버 오류(" + status + ")" + tail;
 }
 // AI가 준 글에서 JSON만 뽑기 (중간에 잘린 JSON은 닫아서 살려 봐요)
@@ -2250,31 +2271,43 @@ function aiPickJson(text){
   return {v:null, cut:true};
 }
 function proxyAI(){
-  const api = {err:"", json: async (prompt, opts) => {
-    api.err = "";
+  // 한 번 부르기: 받은 결과와 함께, 잠갔다 다시 해 볼 만한 실패인지도 돌려줘요
+  async function once(prompt, opts){
     const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 25000);
     try{
       const r = await fetch(AI_URL, {method:"POST", headers:{"Content-Type":"application/json"}, signal:ctl.signal,
         body:JSON.stringify({code:BETA_CODE, prompt, tier:(opts && opts.modelTier) || "default"})});
       let raw = ""; try{ raw = await r.text(); }catch(_){}
       let data = null; try{ data = raw ? JSON.parse(raw) : null; }catch(_){ data = null; }
-      if(!r.ok){ api.err = aiStatusNote(r.status, data && data.error ? data.error : ""); return null; }
-      if(!data || typeof data.text !== "string"){ api.err = "AI 서버 코드가 아직 예전 것이에요"; return null; }
-      if(!data.text.trim()){
-        api.err = data.stop_reason === "max_tokens"
-          ? "AI 답변이 길이 제한에 걸렸어요"
-          : "AI가 답을 다 만들지 못했어요 · 응답이 비어 있어요";
-        return null;
+      if(!r.ok){
+        const msg = data && data.error ? data.error : "";
+        const ra = Number((r.headers && r.headers.get && r.headers.get("Retry-After")) || 0) || 0;
+        const limited = /\b429\b|slow\s?down|rate.?limit/i.test(String(msg));
+        return {v:null, err:aiStatusNote(r.status, msg, ra), retry:!limited && (r.status >= 500 || r.status === 408)};
       }
+      if(!data || typeof data.text !== "string") return {v:null, err:"AI 서버 코드가 아직 예전 것이에요", retry:false};
+      if(!data.text.trim()) return {v:null, retry:true, err: data.stop_reason === "max_tokens"
+        ? "AI 답변이 길이 제한에 걸렸어요"
+        : "AI가 답을 다 만들지 못했어요 · 응답이 비어 있어요"};
       const picked = aiPickJson(data.text);
-      if(!picked.v){ api.err = "AI 응답이 중간에 잘려서 읽을 수 없어요"; return null; }
-      if(picked.cut) api.err = "AI 응답이 일부 잘렸어요";
-      return picked.v;
+      if(!picked.v) return {v:null, err:"AI 응답이 중간에 잘려서 읽을 수 없어요", retry:true};
+      return {v:picked.v, err:picked.cut ? "AI 응답이 일부 잘렸어요" : "", retry:false};
     }catch(e){
-      api.err = e && e.name === "AbortError" ? "AI 서버 응답이 너무 늦어요 (25초 넘음)"
-        : "AI 서버에 연결하지 못했어요 · 인터넷 연결을 확인해 주세요";
-      return null;
+      const aborted = e && e.name === "AbortError";
+      return {v:null, retry:!aborted, err: aborted ? "AI 서버 응답이 너무 늦어요 (25초 넘음)"
+        : "AI 서버에 연결하지 못했어요 · 인터넷 연결을 확인해 주세요"};
     }finally{ clearTimeout(t); }
+  }
+  const api = {err:"", json: async (prompt, opts) => {
+    api.err = "";
+    let r = await once(prompt, opts);
+    if(!r.v && r.retry){   // 잠갔다 끊긴 경우는 한 번만 더 (요청 수를 아끼려고 두 번까지)
+      await new Promise(res => setTimeout(res, 900));
+      const again = await once(prompt, opts);
+      r = again.v ? again : {v:null, err:again.err || r.err};
+    }
+    api.err = r.err || "";
+    return r.v;
   }};
   return api;
 }
@@ -2379,19 +2412,20 @@ async function aiParts(j){
   const styleRule = typeof styleRuleText === "function" ? styleRuleText() : "";
   const emoRule = styleRule ? "6. " + styleRule : "6. 이모지 쓰지 마.";
   const noFake = "메모에 없는 운동 이름·무게·횟수·세트·통증·날짜를 지어내지 마. 진단이나 치료처럼 들리는 표현도 쓰지 마.";
-  const head =
+  const memoText = String(j.text || "").trim().slice(0, 2000);   // 너무 긴 메모는 서버 글자 수 상한에 걸려서 앞부분만
+  // 세 갈래가 같이 쓰는 머리말 (운동 목록/나머지 갈래에는 지난 수업 기록을 넣지 않아요 — 토큰 아끼기)
+  const core =
 `너는 퍼스널 트레이너를 돕는 수업일지 작가야. 트레이너가 수업 직후 급하게 남긴 짧은 메모를 회원에게 보낼 일지로 풀어 써.
 
-[회원] ${m.name} (부를 때: ${honor}) / 운동 목표: ${m.goal || "미정"} / 오늘 ${sessionNo(j) || ""}회차
+[회원] ${m.name} (부를 때: ${honor}) / 운동 목표: ${m.goal || "미정"}
 [오늘 타겟 부위] ${j.part || "미정"}${partInfo(j) ? ` — 관련 근육: ${String(partInfo(j)).split(" · ").join(", ")}` : ""}
 [트레이너가 고른 운동] ${j.keywords.filter(k => !isPoint(k)).join(", ") || "(없음)"}
 [트레이너가 고른 포인트] ${j.keywords.filter(isPoint).join(", ") || "(없음)"}
 [운동 기록 정리본] ${organized}
 [트레이너 메모 원문]
-${j.text || "(없음)"}
-[지난 수업 기록]
-${history}
+${memoText || "(없음)"}
 ${style}`;
+  const head = core + `\n[오늘 ${sessionNo(j) || ""}회차 · 지난 수업 기록]\n${history}\n`;
   const leadPrompt = head +
 `
 첫 문단(lead)만 써.
@@ -2403,7 +2437,7 @@ ${style}`;
 ${emoRule}
 ${S.jlang !== "ko" ? `7. ${lang[2]}로 써.\n` : ""}200자 안으로 짧게.
 JSON만 답해: {"lead":""}`;
-  const exPrompt = head +
+  const exPrompt = core +
 `
 운동 목록(exercises)만 써.
 1. 오늘 한 운동마다 한 항목. "운동 이름과 기록 — 이 운동이 어디에 좋은지 20자 안팎" 형식.
@@ -2412,7 +2446,7 @@ JSON만 답해: {"lead":""}`;
 4. 말투: ${tone}. 짧게.
 ${emoRule}
 JSON만 답해: {"exercises":[]}`;
-  const restPrompt = head +
+  const restPrompt = core +
 `
 좋아진 점·주의할 점·메모 속 과제만 써.
 1. good: 메모 속 성과(증량, 성공, 자세 개선, 통증 없음 등)를 메모에 적힌 수치 그대로 살려 한 문장. 성과가 없으면 빈 배열.
@@ -2423,12 +2457,14 @@ JSON만 답해: {"exercises":[]}`;
 ${emoRule}
 항목마다 한 문장씩, 짧게.
 JSON만 답해: {"good":[],"caution":[],"homework_in_memo":[]}`;
-  const [s1, s2, s3] = await Promise.all([aiNS(), aiNS(), aiNS()]);
-  if(!s1 || !s2 || !s3){ if(!aiNote) aiNote = PROXY_ON && aiBlocked ? "오늘 AI 정리를 다 썼어요" : "AI를 쓸 수 없는 상태예요 (베타 코드가 없거나 인터넷이 끊겼어요)"; return null; }
+  // 메모가 비어 있고 고른 운동·포인트만 있으면 '나머지' 갈래는 물어볼 게 없어서 안 불러요
+  const hasMemo = !!String(j.text || "").trim();
+  const [s1, s2, s3] = await Promise.all([aiNS(), aiNS(), hasMemo ? aiNS() : null]);
+  if(!s1 || !s2 || (hasMemo && !s3)){ if(!aiNote) aiNote = PROXY_ON && aiBlocked ? "오늘 AI 정리를 다 썼어요" : "AI를 쓸 수 없는 상태예요 (베타 코드가 없거나 인터넷이 끊겼어요)"; return null; }
   const [v1, v2, v3] = await Promise.all([
     s1.json(leadPrompt, {modelTier:"default"}).catch(() => null),
     s2.json(exPrompt, {modelTier:"default"}).catch(() => null),
-    s3.json(restPrompt, {modelTier:"default"}).catch(() => null)
+    hasMemo && s3 ? s3.json(restPrompt, {modelTier:"default"}).catch(() => null) : Promise.resolve(null)
   ]);
   if(!v1 || !v1.lead){ aiNote = (s1.err || "AI가 일지 본문을 만들지 못했어요"); return null; }
   const notes = [];
@@ -2438,14 +2474,17 @@ JSON만 답해: {"good":[],"caution":[],"homework_in_memo":[]}`;
     ex = o.ex.length ? o.ex : j.keywords.filter(k => !isPoint(k)).map(k => (findEx(k) || {name:k}).name);
     notes.push("운동 설명은 AI가 못 만들어서 앱 정리로 채웠어요" + (s2 && s2.err ? " (" + s2.err + ")" : ""));
   }
-  let good = arrOf(v3 && v3.good), warn = arrOf(v3 && v3.caution), hw = arrOf(v3 && v3.homework_in_memo);
-  if(!v3){ notes.push("좋아진 점·주의할 점은 AI가 못 채워서 비워 뒀어요 (" + (s3.err || "응답 없음") + ")"); hw = detectHw(j); }
+  let good = [], warn = [], hw = [];
+  if(hasMemo){
+    good = arrOf(v3 && v3.good); warn = arrOf(v3 && v3.caution); hw = arrOf(v3 && v3.homework_in_memo);
+    if(!v3){ notes.push("좋아진 점·주의할 점은 AI가 못 채워서 비워 뒀어요 (" + (s3.err || "응답 없음") + ")"); hw = detectHw(j); }
+  }
   let out = {lead:String(v1.lead).trim(), ex, good, warn, hwMemo:hw,
     by:"ai", lang:S.jlang, tone:!!styleP(), partial:notes.join(" · ")};
   if(S.jlang === "ko"){
-    // 2차 검수: 맞춤법 검사 → 자주 틀리는 띄어쓰기 자동 교정
+    // 2차 검수: 맞춤법 검사 → 자주 틀리는 띄어쓰기 자동 교정 (고칠 만한 분량이 없으면 건너뛰어요)
     const all = [out.lead, ...out.ex, ...out.good, ...out.warn];
-    const pr = await proofread(all).catch(() => null);
+    const pr = all.join("").length >= 30 ? await proofread(all).catch(() => null) : null;
     const fixed = (pr ? pr.lines : all).map(localFix);
     let i = 0; const take = n => fixed.slice(i, i += n);
     out = {...out, lead:take(1)[0], ex:take(out.ex.length), good:take(out.good.length), warn:take(out.warn.length)};
@@ -2582,7 +2621,8 @@ function renderDraft(){
     ? "✦ AI가 이렇게 채웠어요" + (d.tone ? `<span class="d-badge">내 말투 적용</span>` : "")
     : AI_ON ? "기본 정리로 채웠어요" : "✦ 이렇게 정리했어요";
   // AI로 못 채웠으면 이유를 화면에 남겨 둬요 (토스트는 금방 사라져서)
-  const why = (!d.aiOK && d.err) ? `<div class="d-err"><b>AI로 채우지 못했어요</b>${esc(d.err)}<em>지금은 앱 기본 정리로 채웠어요. 위의 '${AI_ON ? "AI로 다시 채우기" : "다시 채우기"}'를 한 번 더 눌러 볼 수 있어요.</em></div>` : "";
+  // 베타 코드 없이 연 사람에게는 AI를 시도하지 않으니 빨간 실패 박스를 띄우지 않아요
+  const why = (AI_ON && !d.aiOK && d.err) ? `<div class="d-err"><b>AI로 채우지 못했어요</b>${esc(d.err)}<em>지금은 앱 기본 정리로 채웠어요. 위의 '${AI_ON ? "AI로 다시 채우기" : "다시 채우기"}'를 한 번 더 눌러 볼 수 있어요.</em></div>` : "";
   const soft = (d.aiOK && d.partial) ? `<div class="d-soft">${esc(d.partial)}</div>` : "";
   box.innerHTML = `<div class="draft">
     <div class="d-head">${head}</div>
@@ -3171,18 +3211,47 @@ const FB_PH = {
   "버그":"어떤 화면에서, 무엇을 눌렀을 때, 어떻게 됐는지 적어 주세요\n(사용 중인 기기 정보는 자동으로 함께 보내져요)",
   "제안":"있었으면 하는 기능을 자유롭게 적어 주세요"
 };
+/* 앱 안에 쌓인 문의를 카톡·메일로 바로 보낼 수 있게 (서버가 없어도 전달할 길) */
+const FB_NAME = {"문의":"문의", "버그":"버그 신고", "제안":"기능 제안"};
+function fbFull(f){
+  return `[핏노트 ${FB_NAME[f.type] || f.type}] ${f.date}${data.settings.trainer ? " · " + data.settings.trainer + " 트레이너" : ""}\n${f.text}${f.device ? "\n\n(기기: " + f.device + ")" : ""}`;
+}
+async function copyText(t){
+  try{ await navigator.clipboard.writeText(t); return true; }
+  catch(e){
+    info("아래 내용을 길게 눌러 복사해 주세요", `<textarea class="copy-box" readonly>${esc(t)}</textarea>`);
+    const box = document.querySelector(".copy-box"); if(box){ box.focus(); box.select(); }
+    return false;
+  }
+}
+async function shareFeedback(f){
+  const t = fbFull(f);
+  if(navigator.share){
+    try{ await navigator.share({title:"핏노트 " + (FB_NAME[f.type] || f.type), text:t}); return; }
+    catch(e){ if(e && e.name === "AbortError") return; }   // 사용자가 취소하면 그대로
+  }
+  if(await copyText(t)) toast("복사했어요 · 카톡이나 메일에 붙여넣어 주세요");
+}
 function renderFeedback(){
   $("segFb").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === fbType));
   $("fbText").placeholder = FB_PH[fbType];
   $("fbListH").hidden = !data.feedback.length;
-  $("fbList").innerHTML = data.feedback.slice().reverse().map(f => `<div class="set-row fb-item"><span class="fb-type">${f.type}</span><span class="k">${esc(f.text)}<small>${f.date} · 전송 대기</small></span></div>`).join("");
+  $("fbList").innerHTML = data.feedback.slice().reverse().map((f, i) => {
+    const idx = data.feedback.length - 1 - i;
+    return `<div class="set-row fb-item"><span class="fb-type">${f.type}</span><span class="k">${esc(f.text)}<small>${f.date} · ${f.sent ? "보냈어요" : "아직 전달 전"}</small></span><span class="fb-btns"><button class="fb-btn" data-fbs="${idx}">공유</button><button class="fb-btn alt" data-fbc="${idx}">복사</button></span></div>`;
+  }).join("");
+  $("fbList").querySelectorAll("[data-fbc]").forEach(b => b.onclick = async () => {
+    if(await copyText(fbFull(data.feedback[Number(b.dataset.fbc)]))) toast("문의 내용을 복사했어요 · 카톡이나 메일에 붙여넣어 주세요");
+  });
+  $("fbList").querySelectorAll("[data-fbs]").forEach(b => b.onclick = () => shareFeedback(data.feedback[Number(b.dataset.fbs)]));
 }
 $("segFb").querySelectorAll("button").forEach(b => b.onclick = () => { fbType = b.dataset.v; renderFeedback(); });
 $("fbSend").onclick = () => {
   const text = $("fbText").value.trim();
   if(!text){ $("fbText").focus(); toast("내용을 적어 주세요"); return; }
-  data.feedback.push({type:fbType, text, date:fmtMD(TODAY), device: fbType === "버그" ? navigator.userAgent.slice(0,120) : ""});
-  persist(); $("fbText").value = ""; renderFeedback(); toast("고마워요! 잘 받았어요"); chime("done");
+  data.feedback.push({type:fbType, text, date:fmtMD(TODAY), device: navigator.userAgent.slice(0,120)});
+  persist(); $("fbText").value = ""; renderFeedback(); chime("done");
+  toast("고마워요! 아래 '공유'나 '복사'로 카톡·메일에서 보내 주세요");
 };
 
 /* --- 백업 및 복원 ---
@@ -3272,10 +3341,10 @@ $("panel-privacy").innerHTML = DOC_NOTE + `
 <h3>1. 처리하는 정보</h3><p>트레이너: 이름, 샵 이름<br>회원: 이름, 운동 목표, 수업 날짜·시간, 수업 메모(통증·부상 등 건강 관련 내용이 포함될 수 있음), 수업 영상(선택)</p>
 <h3>2. 이용 목적</h3><p>수업 기록 관리, 수업일지 작성, 회원에게 보낼 일지 생성</p>
 <h3>3. 저장 위치</h3><p>현재 버전은 모든 정보를 이용자의 기기(브라우저) 안에만 저장해요. 서버를 연결한 이후에는 암호화된 서버에 저장되며, 이 방침에 그 내용을 추가해 알려 드려요.</p>
-<h3>4. AI 처리</h3><p>'AI로 채우기'를 누르면 일지 정리를 위해 해당 수업의 메모와 최근 기록이 AI(Anthropic Claude)로 전송돼요. 일지 정리 외의 목적으로 쓰이지 않아요.</p>
+<h3>4. AI 처리</h3><p>'AI로 채우기'를 누르면 일지 정리를 위해 해당 수업의 메모와 최근 수업 기록이 AI(Anthropic Claude)로 전송돼요. 이때 핏노트 AI 서버(Cloudflare Worker)를 거쳐 가며, 서버는 메모 내용을 저장하지 않고 전달만 해요. 일지 정리 외의 목적으로 쓰이지 않아요. 베타 기간에는 베타 코드를 받은 사람만 AI를 쓸 수 있어요.</p>
 <h3>5. 민감정보</h3><p>통증·부상 같은 건강 관련 내용은 법적으로 민감정보에 해당할 수 있어요. 꼭 필요한 내용만 적고, 회원의 별도 동의를 받아 주세요.</p>
 <h3>6. 삭제</h3><p>회원 정보와 기록은 회원 페이지의 '편집 → 회원 삭제'로 언제든 지울 수 있어요.</p>
-<h3>7. 문의</h3><p>설정 → 고객센터에서 문의해 주세요.</p>`;
+<h3>7. 문의</h3><p>설정 → 고객센터에 적어 주세요. 적은 내용은 기기에 보관되고, '복사'나 '공유'로 카톡·메일로 보내 주시면 확인해요.</p>`;
 
 /* --- 패널 이동 --- */
 const PANEL_TITLE = {backup:"백업 및 복원", main:"설정", profile:"내 정보", look:"회원에게 보이는 모습", stats:"내 기록", design:"화면 및 디자인", widgets:"홈 화면 위젯", app:"소리 및 알림", lang:"언어", support:"고객센터", help:"도움말", policy:"약관 및 정책", terms:"이용약관", privacy:"개인정보 처리방침"};
