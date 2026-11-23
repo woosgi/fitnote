@@ -399,6 +399,11 @@
   .draft{margin-top:22px;border-radius:20px;border:1.5px solid var(--mint);background:var(--surface);padding:18px 18px 16px;box-shadow:0 6px 20px rgba(0,0,0,.05)}
   .d-head{font-size:13px;font-weight:700;color:var(--mint-dark)}
   .d-stale{margin-top:10px;font-size:13px;color:#C46F1C;background:var(--warnbg);border-radius:10px;padding:8px 10px;line-height:1.5}
+.d-err{margin-top:10px;font-size:13px;color:#A33B22;background:#FDEDE8;border-radius:10px;padding:9px 11px;line-height:1.55}
+  .d-err b{display:block;margin-bottom:2px}
+  .d-err em{display:block;font-style:normal;color:#8A4A3A;margin-top:5px;font-size:12.5px}
+  .d-soft{margin-top:10px;font-size:12.5px;color:#6B6257;background:#F5F1EA;border-radius:10px;padding:8px 10px;line-height:1.5}
+  .d-badge{display:inline-block;margin-left:6px;font-size:11px;font-weight:700;color:#1F7A5A;background:#E4F5ED;border-radius:99px;padding:2px 8px;vertical-align:middle}
   .d-lead{margin-top:10px;font-size:16px;line-height:1.75;color:var(--ink)}
   .d-sec{margin-top:16px}
   .d-sec h4{font-size:12px;font-weight:700;color:var(--mint-dark);margin-bottom:4px}
@@ -2305,25 +2310,133 @@ function rulesParts(j){
 
 /* ===== AI ===== */
 // 전용 주소(GitHub Pages)에서는 핏노트 AI 서버(Cloudflare)를 거쳐 Claude Haiku를 써요. 열쇠는 서버에만 있어요.
+let aiNote = "";   // AI를 못 쓸 때 화면에 그대로 보여 줄 실제 이유
+// 서버가 준 오류를 사람이 읽는 말로
+function aiStatusNote(status, e){
+  const tail = e ? " · " + String(e).slice(0, 90) : "";
+  if(status === 401) return "베타 코드가 맞지 않아요";
+  if(status === 403) return "이 주소에서는 AI 서버를 쓸 수 없어요 (핏노트 주소에서 열어 주세요)";
+  if(status === 400) return "보낼 내용이 너무 길거나 형식이 맞지 않아요" + tail;
+  if(status === 413) return "보낼 내용이 너무 길어요";
+  if(status === 429) return "AI 요청이 잠시 많아요 · 조금 뒤에 다시";
+  return "AI 서버 오류(" + status + ")" + tail;
+}
+// AI가 준 글에서 JSON만 뽑기 (중간에 잘린 JSON은 닫아서 살려 봐요)
+function aiJsonRepair(src){
+  let s = String(src || "").replace(/```(?:json)?/gi, "").trim();
+  let inStr = false, esc = false; const stack = [];
+  for(let i = 0; i < s.length; i++){
+    const c = s[i];
+    if(inStr){ if(esc) esc = false; else if(c === "\\") esc = true; else if(c === '"') inStr = false; continue; }
+    if(c === '"'){ inStr = true; continue; }
+    if(c === "{" || c === "[") stack.push(c);
+    else if(c === "}" || c === "]") stack.pop();
+  }
+  if(inStr) s += '"';
+  s = s.replace(/,\s*"[^"]*"\s*:?\s*$/, "").replace(/,\s*$/, "");
+  while(stack.length) s += stack.pop() === "{" ? "}" : "]";
+  return s;
+}
+function aiPickJson(text){
+  const s = String(text || "").replace(/```(?:json)?/gi, "");
+  const i = s.indexOf("{");
+  if(i < 0) return {v:null, cut:false};
+  let depth = 0, inStr = false, esc = false, end = -1;
+  for(let k = i; k < s.length; k++){
+    const c = s[k];
+    if(inStr){ if(esc) esc = false; else if(c === "\\") esc = true; else if(c === '"') inStr = false; continue; }
+    if(c === '"'){ inStr = true; continue; }
+    if(c === "{") depth++;
+    else if(c === "}"){ depth--; if(depth === 0){ end = k; break; } }
+  }
+  const body = end >= 0 ? s.slice(i, end + 1) : s.slice(i);
+  try{ return {v:JSON.parse(body), cut:false}; }catch(e){}
+  try{ return {v:JSON.parse(aiJsonRepair(body)), cut:true}; }catch(e){}
+  return {v:null, cut:true};
+}
 function proxyAI(){
-  return {json: async (prompt, opts) => {
-    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 30000);
+  const api = {err:"", json: async (prompt, opts) => {
+    api.err = "";
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 25000);
     try{
       const r = await fetch(AI_URL, {method:"POST", headers:{"Content-Type":"application/json"}, signal:ctl.signal,
         body:JSON.stringify({code:BETA_CODE, prompt, tier:(opts && opts.modelTier) || "default"})});
-      if(!r.ok){
-        let e = ""; try{ e = (await r.json()).error || ""; }catch(_){}
-        aiNote = r.status === 401 ? "베타 코드가 맞지 않아요" : r.status === 429 ? "AI 사용량이 잠시 많아요" : `AI 서버 오류(${r.status}${e ? " · " + e : ""})`;
+      let raw = ""; try{ raw = await r.text(); }catch(_){}
+      let data = null; try{ data = raw ? JSON.parse(raw) : null; }catch(_){ data = null; }
+      if(!r.ok){ api.err = aiStatusNote(r.status, data && data.error ? data.error : ""); return null; }
+      if(!data || typeof data.text !== "string"){ api.err = "AI 서버 코드가 아직 예전 것이에요"; return null; }
+      if(!data.text.trim()){
+        api.err = data.stop_reason === "max_tokens"
+          ? "AI 답변이 길이 제한에 걸렸어요"
+          : "AI가 답을 다 만들지 못했어요 · 응답이 비어 있어요";
         return null;
       }
-      let text = ""; try{ text = (await r.json()).text; }catch(_){ aiNote = "AI 서버 코드가 아직 예전 것이에요"; return null; }
-      const m = String(text || "").match(/\{[\s\S]*\}/);
-      return m ? JSON.parse(m[0]) : null;
-    }catch(e){ if(!aiNote) aiNote = "AI 서버에 연결하지 못했어요"; return null; }
-    finally{ clearTimeout(t); }
+      const picked = aiPickJson(data.text);
+      if(!picked.v){ api.err = "AI 응답이 중간에 잘려서 읽을 수 없어요"; return null; }
+      if(picked.cut) api.err = "AI 응답이 일부 잘렸어요";
+      return picked.v;
+    }catch(e){
+      api.err = e && e.name === "AbortError" ? "AI 서버 응답이 너무 늦어요 (25초 넘음)"
+        : "AI 서버에 연결하지 못했어요 · 인터넷 연결을 확인해 주세요";
+      return null;
+    }finally{ clearTimeout(t); }
   }};
+  return api;
 }
-let aiNote = "";
+/* ===== 내 말투 카드 → 프롬프트 =====
+   설정 > 내 말투 학습에서 저장한 카드가 있고 '내 말투 적용'이 켜져 있으면 프롬프트에 넣어요. */
+function styleOn(){
+  return typeof STYLE_FEATURE !== "undefined" && !!STYLE_FEATURE && typeof stData === "function" &&
+    !!stData().profile && !!stData().on;
+}
+function styleP(){ return styleOn() ? stData().profile : null; }
+function styleTone(){   // 카드의 경어도가 앱 설정보다 우선이에요
+  const p = styleP();
+  const g = p ? String(p["경어도"] || "") : "";
+  if(g.includes("합니다")) return "formal";
+  if(g.includes("해요")) return "soft";
+  return S.tone === "formal" ? "formal" : "soft";
+}
+function stylePrompt(){
+  const p = styleP(); if(!p) return "";
+  const L = [], add = (k, v) => { if(v) L.push("- " + k + ": " + v); };
+  add("호칭", p["칭호_호칭"]);
+  add("말투", p["경어도"]);
+  if((p["종결_습관"] || []).length) add("자주 쓰는 끝맺음", p["종결_습관"].join(", "));
+  if((p["인사_단골멘트"] || []).length) add("자주 쓰는 인사·멘트", p["인사_단골멘트"].join(" / "));
+  const e = p["이모지"];
+  if(e) add("이모지", e.사용여부 ? ((e.주요_이모지 || []).join(" ") || "이모지") + " · 빈도 " + (e.빈도 || "가끔") : "이모지를 쓰지 않음");
+  add("ㅋㅋ·ㅎㅎ", p["ㅋㅋ_사용"]);
+  add("문장 길이", p["문장_길이"]);
+  add("줄바꿈", p["단락_구성"]);
+  add("숫자 표기", p["숫자_표기"]);
+  add("운동 이름", p["운동명_표기"]);
+  if(p["피드백_어조"]){
+    const b = p["피드백_어조"];
+    add("피드백 비율", `칭찬 ${b.칭찬}% · 독려 ${b.독려}% · 자세 교정 ${b.자세교정}%`);
+  }
+  add("이런 말투는 쓰지 않음", p["금지할_느낌"]);
+  const ex = (p["예시_문장"] || []).map(s => String(s).trim()).filter(Boolean).slice(0, 3);
+  let out = "\n[내 말투 프로필 · 이 트레이너가 실제로 쓰는 말투]\n" + L.join("\n") + "\n";
+  if(ex.length) out += "[원문 예시 · 이 문장들의 말투를 그대로 흉내 내]\n" + ex.map((s, i) => (i + 1) + ". " + s).join("\n") + "\n";
+  return out;
+}
+function styleHonor(m){   // 카드의 호칭을 우선으로
+  const p = styleP();
+  const h = p ? String(p["칭호_호칭"] || "") : "";
+  if(!h) return callName(m.name) + "님";
+  if(h.includes("이름") || h.includes("+님")) return callName(m.name) + "님";
+  if(h.includes("회원")) return "회원님";
+  if(h.includes("고객")) return "고객님";
+  return h.replace(/님$/, "") + "님";
+}
+function styleRuleText(){   // 프롬프트에 넣을 말투 규칙 한 줄
+  if(!styleP()) return "";
+  const e = styleP()["이모지"];
+  const emo = e && e.사용여부 ? "이모지는 프로필에 적힌 이모지만, 적힌 빈도를 넘기지 마." : "이모지와 ㅋㅋ는 쓰지 마.";
+  return "위 [내 말투 프로필]과 [원문 예시]의 호칭·종결어미·줄바꿈·인사 멘트를 최우선으로 따라. " + emo + " 프로필에 있는 표현은 그대로 써도 돼.";
+}
+
 // 베타: 한 사람당 하루 AI 정리 횟수 제한 (버튼 한 번 = 1번)
 const AI_DAILY = 20;
 let aiBlocked = false;
@@ -2334,6 +2447,10 @@ function startAI(){   // AI를 쓰는 버튼을 누를 때 한 번
   if(aiLeft() <= 0){ aiBlocked = true; aiNote = "오늘 AI 정리를 다 썼어요"; return; }
   aiBlocked = false;
   try{ localStorage.setItem("fitnote-ai-uses", JSON.stringify({d:TODAY, n:aiCount() + 1})); }catch(e){}
+}
+function aiRefund(){   // AI를 못 썼으면 오늘 횟수에서 다시 빼요
+  if(!PROXY_ON || aiBlocked) return;
+  try{ const o = JSON.parse(localStorage.getItem("fitnote-ai-uses")) || {}; if(o.d === TODAY) localStorage.setItem("fitnote-ai-uses", JSON.stringify({d:TODAY, n:Math.max(0, (o.n || 0) - 1)})); }catch(e){}
 }
 function aiLeftNote(){   // 거의 다 썼을 때 알려 주기
   if(!PROXY_ON || aiBlocked) return "";
@@ -2353,48 +2470,83 @@ async function aiNS(){
 }
 const arrOf = a => Array.isArray(a) ? a.map(x => String(x).trim()).filter(Boolean) : [];
 
-// AI로 채우기: 메모를 줄이지 않고, 회원이 이해하기 쉽게 살을 붙여 풀어 씀
+// AI로 채우기: 한 번에 다 시키면 AI 서버가 답을 다 만들기 전에 응답이 끊겨서 빈 답이 와요.
+// 그래서 짧은 세 갈래(본문 / 운동 목록 / 나머지)로 나눠 동시에 시켜요.
 async function aiParts(j){
-  const sample = await aiNS();
-  if(!sample) return null;
   const m = member(j.memberId);
+  const honor = typeof styleHonor === "function" ? styleHonor(m) : callName(m.name) + "님";
+  const tone = styleTone() === "formal" ? "합니다체(예: 진행했습니다, 좋아졌습니다)" : "해요체(예: 진행했어요, 좋아졌어요)";
   const history = prevJournals(j, 3).map(p => `- ${fmtMD(p.date)} (${p.part || "부위 미정"}) ${summaryOf(p)}`).join("\n") || "(이번이 첫 기록)";
   const exList = todaysEx(j).map(e => `${e.name}(${e.part} · ${EXDB[e.part].subs[e.sub][0]})`).join(", ");
+  const organized = organizeMemo(j).ex.join(" / ") || "(없음)";
   const lang = J_LANGS.find(l => l[0] === S.jlang);
-  const tone = S.tone === "formal" ? "합니다체(예: 진행했습니다, 좋아졌습니다)" : "해요체(예: 진행했어요, 좋아졌어요)";
-  const prompt =
-`너는 퍼스널 트레이너를 돕는 수업일지 작가야. 트레이너가 수업 직후 급하게 남긴 짧은 메모를, 회원이 읽고 "오늘 내가 무엇을, 왜 했는지" 이해할 수 있는 친절하고 구체적인 수업일지로 풀어 써.
+  const style = typeof stylePrompt === "function" ? stylePrompt() : "";
+  const styleRule = typeof styleRuleText === "function" ? styleRuleText() : "";
+  const emoRule = styleRule ? "6. " + styleRule : "6. 이모지 쓰지 마.";
+  const noFake = "메모에 없는 운동 이름·무게·횟수·세트·통증·날짜를 지어내지 마. 진단이나 치료처럼 들리는 표현도 쓰지 마.";
+  const head =
+`너는 퍼스널 트레이너를 돕는 수업일지 작가야. 트레이너가 수업 직후 급하게 남긴 짧은 메모를 회원에게 보낼 일지로 풀어 써.
 
-[회원] ${m.name} (부를 때: ${callName(m.name)}님) / 운동 목표: ${m.goal || "미정"} / 오늘 ${sessionNo(j) || ""}회차
-[오늘 타겟 부위] ${j.part || "미정"}${partInfo(j) ? ` (${partInfo(j)})` : ""}
+[회원] ${m.name} (부를 때: ${honor}) / 운동 목표: ${m.goal || "미정"} / 오늘 ${sessionNo(j) || ""}회차
+[오늘 타겟 부위] ${j.part || "미정"}${partInfo(j) ? ` — 관련 근육: ${String(partInfo(j)).split(" · ").join(", ")}` : ""}
 [트레이너가 고른 운동] ${j.keywords.filter(k => !isPoint(k)).join(", ") || "(없음)"}
 [트레이너가 고른 포인트] ${j.keywords.filter(isPoint).join(", ") || "(없음)"}
-[메모에서 확인된 운동과 근육] ${exList || "(없음)"}
-[운동 기록 정리본] ${organizeMemo(j).ex.join(" / ") || "(없음)"}
+[운동 기록 정리본] ${organized}
 [트레이너 메모 원문]
 ${j.text || "(없음)"}
 [지난 수업 기록]
 ${history}
-
-작성 규칙
-1. 메모를 줄이지 말고 풀어서 설명해. 결과가 메모보다 짧거나 메모를 다시 요약한 수준이면 안 돼.
-2. lead: 3~4문장. ① 오늘 무엇을 중심으로 운동했는지 ② 그 부위나 운동이 회원의 목표에 왜 도움이 되는지 일반적인 운동 상식으로 설명 ③ 오늘 수업에서 잘한 점이나 눈에 띈 점 ④ 지난 수업과 이어지는 흐름이 있으면 한마디(지난 기록이 없으면 ④는 빼). 첫 문장에 "${callName(m.name)}님"을 한 번만 넣어.
-3. exercises: 오늘 한 운동마다 한 항목. "운동 이름과 기록 — 이 운동이 어디에 좋은지 한 줄 설명" 형식. [운동 기록 정리본]이 있으면 기록 부분은 그 형식 그대로 써. 메모에 구체적인 운동 이름이 없으면 운동을 지어내지 말고, 타겟 부위를 설명하는 항목 1개만 써. (예: "윗가슴(대흉근 상부) 집중 운동 — 쇄골 아래쪽을 채워 상체 라인을 또렷하게 만들어 주는 부위예요")
-4. good: 메모 속 성과(증량, 성공, 자세 개선, 통증 없음 등)를 메모에 적힌 수치 그대로 살리고, 그게 왜 의미 있는지 한 문장 덧붙여. (예: "중량 5kg 증량 성공 — 근력이 꾸준히 늘고 있다는 확실한 신호예요") 성과가 없으면 빈 배열.
-5. caution: 메모에 불편·통증·조심·주의가 있을 때만, 무엇을 조심하면 되는지 한 문장으로. 없으면 빈 배열.
-6. homework_in_memo: 메모에서 트레이너가 회원에게 해 오라고 한 과제를 찾아, 과제 하나당 한 항목으로 나눠 짧게 한국어로 적어. "다음 시간까지", "꼭", "~해 주세요" 같은 말은 빼고 무엇을 얼마나 할지만. 횟수와 세트는 "5회 × 5세트" 형식. (예: 메모 "다음 시간까지 운동 전 꼭 신전 스트레칭 20분씩 하시고 풀업 5회씩 5세트 진행해 주세요" → ["운동 전 신전 스트레칭 20분", "풀업 5회 × 5세트"]) 새 과제를 만들지 마. 없으면 빈 배열. 과제 내용은 lead, exercises, good, caution에 넣지 마.
-7. 사실 지키기: 메모에 없는 운동 이름, 무게, 횟수, 세트, 통증, 날짜를 지어내지 마. 진단이나 치료처럼 들리는 표현(예: "교정됩니다", "치료")은 쓰지 마. 운동의 일반적인 효과 설명은 괜찮아.
-8. 말투: ${tone}. 담당 트레이너가 회원에게 카톡으로 직접 보내는 것처럼, 사람이 쓴 자연스러운 한국어로 써.
-   - 쓰지 말 것: "~를 통해", "효과적으로", "도움이 될 것입니다", "중요합니다", "확실한 신호", "여정", "꾸준한 노력의 결과", "놀라운", "훌륭한", "~하는 것이 좋습니다", 느낌표 남발, 번역투, 같은 말 반복.
-   - 문장은 짧고 구체적으로. 한 문장에 한 가지 내용.
-   - 좋은 예: "오늘은 윗가슴 위주로 운동했어요. 쇄골 아래쪽이 채워지면 상체 라인이 훨씬 또렷해 보여요."
-   - 나쁜 예: "오늘은 효과적인 윗가슴 운동을 통해 상체 발달에 큰 도움이 되는 훌륭한 시간을 가졌습니다!"
-9. 맞춤법: 띄어쓰기를 정확히. 보조 용언은 띄어 써(해 주세요, 해 보세요, 해 오세요). 의존 명사도 띄어 써(할 수 있어요, 하는 것 같아요). 단위는 숫자에 붙여(5kg, 20분, 3세트). "키로"는 "kg"으로. 이모지 쓰지 마.
-${S.jlang !== "ko" ? `10. 언어: homework_in_memo를 뺀 모든 문장(lead, exercises, good, caution)을 ${lang[2]}로 써. 회원은 그 언어를 쓰는 사람이야. 운동 이름도 그 언어로 자연스럽게 옮겨.\n` : ""}
-JSON만 답해: {"lead":"","exercises":[],"good":[],"caution":[],"homework_in_memo":[]}`;
-  const v = await sample.json(prompt, {modelTier:"default"});
-  if(!v || !v.lead) return null;
-  let out = {lead:String(v.lead).trim(), ex:arrOf(v.exercises), good:arrOf(v.good), warn:arrOf(v.caution), hwMemo:arrOf(v.homework_in_memo), by:"ai", lang:S.jlang};
+${style}`;
+  const leadPrompt = head +
+`
+첫 문단(lead)만 써.
+1. 3문장. ① 오늘 무엇을 중심으로 운동했는지 ② 그 부위·운동이 회원의 목표에 왜 도움이 되는지 ③ 오늘 잘한 점이나 눈에 띈 점. 지난 수업과 이어지는 흐름은 한 문장 안에 자연스럽게 섞어도 돼.
+2. 첫 문장에 "${honor}"을 한 번만 넣어. 사람이 카톡으로 보내는 말투(${tone})로.
+3. 쓰지 말 것: "~를 통해", "효과적으로", "도움이 될 것입니다", "중요합니다", "여정", "꾸준한 노력의 결과", "훌륭한", 느낌표 남발, 번역투.
+4. ${noFake}
+5. 띄어쓰기를 정확히. 보조 용언은 띄어 써(해 주세요, 해 보세요). 단위는 숫자에 붙여(5kg, 3세트). "키로"는 "kg".
+${emoRule}
+${S.jlang !== "ko" ? `7. ${lang[2]}로 써.\n` : ""}200자 안으로 짧게.
+JSON만 답해: {"lead":""}`;
+  const exPrompt = head +
+`
+운동 목록(exercises)만 써.
+1. 오늘 한 운동마다 한 항목. "운동 이름과 기록 — 이 운동이 어디에 좋은지 20자 안팎" 형식.
+2. [운동 기록 정리본]의 기록 형식을 그대로 써. ${noFake}
+3. 메모에 구체적인 운동 이름이 없으면 운동을 지어내지 말고, 타겟 부위 설명 항목 1개만.
+4. 말투: ${tone}. 짧게.
+${emoRule}
+JSON만 답해: {"exercises":[]}`;
+  const restPrompt = head +
+`
+좋아진 점·주의할 점·메모 속 과제만 써.
+1. good: 메모 속 성과(증량, 성공, 자세 개선, 통증 없음 등)를 메모에 적힌 수치 그대로 살려 한 문장. 성과가 없으면 빈 배열.
+2. caution: 메모에 불편·통증·조심·주의가 있을 때만 한 문장. 없으면 빈 배열.
+3. homework_in_memo: 메모에서 트레이너가 "해 오라고" 한 과제만, 과제 하나당 한 항목. "다음 시간까지", "꼭", "~해 주세요"는 빼고 무엇을 얼마나 할지만. 횟수는 "5회 × 5세트" 형식. 새 과제를 만들지 마. 없으면 빈 배열.
+4. ${noFake} 과제 내용을 good·caution에 넣지 마.
+5. 말투: ${tone}.
+${emoRule}
+항목마다 한 문장씩, 짧게.
+JSON만 답해: {"good":[],"caution":[],"homework_in_memo":[]}`;
+  const [s1, s2, s3] = await Promise.all([aiNS(), aiNS(), aiNS()]);
+  if(!s1 || !s2 || !s3){ if(!aiNote) aiNote = PROXY_ON && aiBlocked ? "오늘 AI 정리를 다 썼어요" : "AI를 쓸 수 없는 상태예요 (베타 코드가 없거나 인터넷이 끊겼어요)"; return null; }
+  const [v1, v2, v3] = await Promise.all([
+    s1.json(leadPrompt, {modelTier:"default"}).catch(() => null),
+    s2.json(exPrompt, {modelTier:"default"}).catch(() => null),
+    s3.json(restPrompt, {modelTier:"default"}).catch(() => null)
+  ]);
+  if(!v1 || !v1.lead){ aiNote = (s1.err || "AI가 일지 본문을 만들지 못했어요"); return null; }
+  const notes = [];
+  let ex = arrOf(v2 && v2.exercises);
+  if(!ex.length){
+    const o = organizeMemo(j);
+    ex = o.ex.length ? o.ex : j.keywords.filter(k => !isPoint(k)).map(k => (findEx(k) || {name:k}).name);
+    notes.push("운동 설명은 AI가 못 만들어서 앱 정리로 채웠어요" + (s2 && s2.err ? " (" + s2.err + ")" : ""));
+  }
+  let good = arrOf(v3 && v3.good), warn = arrOf(v3 && v3.caution), hw = arrOf(v3 && v3.homework_in_memo);
+  if(!v3){ notes.push("좋아진 점·주의할 점은 AI가 못 채워서 비워 뒀어요 (" + (s3.err || "응답 없음") + ")"); hw = detectHw(j); }
+  let out = {lead:String(v1.lead).trim(), ex, good, warn, hwMemo:hw,
+    by:"ai", lang:S.jlang, tone:!!styleP(), partial:notes.join(" · ")};
   if(S.jlang === "ko"){
     // 2차 검수: 맞춤법 검사 → 자주 틀리는 띄어쓰기 자동 교정
     const all = [out.lead, ...out.ex, ...out.good, ...out.warn];
@@ -2454,7 +2606,11 @@ async function politeFix(lines){
   if(!lines.length) return {lines, changes:0};
   const sample = await aiNS();
   if(!sample) return null;
-  const tone = S.tone === "formal" ? "합니다체(예: 성공했습니다, 해 오세요)" : "해요체(예: 성공했어요, 해 오세요)";
+  const tone = styleTone() === "formal" ? "합니다체(예: 성공했습니다, 해 오세요)" : "해요체(예: 성공했어요, 해 오세요)";
+  const style = typeof stylePrompt === "function" ? stylePrompt() : "";
+  const styleRule = typeof styleRuleText === "function"
+    ? "- 문장 끝과 호칭은 아래 [내 말투 프로필]을 따라. 내용은 그대로 두고 말투만 맞춰.\n" + styleRuleText() + (styleRuleText() ? "\n" : "")
+    : "";
   try{
     const v = await sample.json(
 `아래는 트레이너가 회원에게 보낼 수업 메모야. 다음 세 가지만 고쳐.
@@ -2463,6 +2619,7 @@ async function politeFix(lines){
 3. "키로"는 "kg"으로.
 - 단어, 내용, 어순은 바꾸지 마. 문장을 더하거나 빼거나 합치지 마. 사람 이름과 숫자는 그대로.
 - 입력과 같은 개수, 같은 순서로.
+${styleRule}${style}
 입력: ${JSON.stringify(lines)}
 JSON만 답해: {"lines":[]}`, {modelTier:"quick"});
     const out = arrOf(v && v.lines);
@@ -2507,13 +2664,14 @@ $("aiBtn").onclick = async () => {
   if(busy || !readyToGo()) return;
   aiNote = ""; startAI(); const j = current, done = setBusy($("aiBtn"), AI_ON ? "AI가 채우고 있어요…" : "정리하고 있어요…");
   let p = null;
-  try{ p = await aiParts(j); }catch(e){ p = null; }
+  try{ p = await aiParts(j); }catch(e){ p = null; if(!aiNote) aiNote = "AI 처리 중 문제가 생겼어요"; }
   const usedAI = !!p;
   if(!p) p = rulesParts(j);
-  j.ai = {...p, src:srcKey(j)}; persist();
-  done(); if(current !== j) return;
+  j.ai = {...p, src:srcKey(j), aiOK:usedAI, err:usedAI ? "" : (aiNote || "AI 응답을 받지 못했어요")};
+  if(!usedAI && !aiBlocked) aiRefund();
+  persist(); done(); if(current !== j) return;
   renderDraft();
-  if(!usedAI && AI_ON) toast((aiNote ? aiNote + " · " : "지금은 AI를 쓸 수 없어 ") + "기본 정리로 채웠어요");
+  if(!usedAI && AI_ON) toast("AI로 못 채웠어요 · 이유는 아래에 적어 뒀어요");
   else if(aiLeftNote()) toast(aiLeftNote());
   refreshHint();
   chime("done");
@@ -2525,9 +2683,16 @@ function renderDraft(){
   const d = j.ai, stale = d.src !== srcKey(j);
   $("aiLabel").textContent = AI_ON ? "AI로 다시 채우기" : "다시 채우기";
   const sec = (title, items, cls, key) => items && items.length ? `<div class="d-sec ${cls||""}"><h4>${title}</h4><ul>${items.map((t,i) => `<li contenteditable="true" data-dk="${key}" data-di="${i}">${esc(t)}</li>`).join("")}</ul></div>` : "";
+  const head = d.by === "ai"
+    ? "✦ AI가 이렇게 채웠어요" + (d.tone ? `<span class="d-badge">내 말투 적용</span>` : "")
+    : AI_ON ? "기본 정리로 채웠어요" : "✦ 이렇게 정리했어요";
+  // AI로 못 채웠으면 이유를 화면에 남겨 둬요 (토스트는 금방 사라져서)
+  const why = (!d.aiOK && d.err) ? `<div class="d-err"><b>AI로 채우지 못했어요</b>${esc(d.err)}<em>지금은 앱 기본 정리로 채웠어요. 위의 '${AI_ON ? "AI로 다시 채우기" : "다시 채우기"}'를 한 번 더 눌러 볼 수 있어요.</em></div>` : "";
+  const soft = (d.aiOK && d.partial) ? `<div class="d-soft">${esc(d.partial)}</div>` : "";
   box.innerHTML = `<div class="draft">
-    <div class="d-head">${d.by === "ai" ? "✦ AI가 이렇게 채웠어요" : AI_ON ? "기본 정리로 채웠어요" : "✦ 이렇게 정리했어요"}</div>
+    <div class="d-head">${head}</div>
     ${stale ? `<div class="d-stale">메모가 바뀌었어요. 위의 '${AI_ON ? "AI로 다시 채우기" : "다시 채우기"}'를 누르면 새 메모로 다시 채워요.</div>` : ""}
+    ${why}${soft}
     ${d.lead ? `<p class="d-lead" contenteditable="true" data-dk="lead">${esc(d.lead)}</p>` : ""}
     ${sec("오늘 한 운동", d.ex, "", "ex")}${sec("좋아진 점", d.good, "", "good")}${sec("주의할 점", d.warn, "warn", "warn")}
     ${sec("메모에서 찾은 과제 · 다음 단계에서 확인해요", d.hwMemo, "hw", "hwMemo")}
@@ -3315,14 +3480,21 @@ function analyzeLocal(samples){
   P["운동명_표기"] = eng >= 2 ? "영어 병기" : abbr >= 2 ? "줄임말 (사레레 등)" : kor ? "한글 우선" : null;
   // 피드백 비율
   const cls = {칭찬:0, 독려:0, 자세교정:0};
+  // 칭찬을 먼저 봐요: "자세 좋아졌어요"처럼 자세 이야기와 겹치는 칭찬이 교정으로 새지 않게
+  const PRAISE = /좋아|좋았|좋은|잘\s?하|잘\s?됐|잘\s?되|잘\s?마무리|잡으셨|잘하셨|훌륭|대단|멋지|멋있|성공|늘었|늘어|완벽|최고|굿|칭찬|안정적|깔끔|수고|고생|대견|무난|확실히|제대로|👍|👏|🔥/;
+  const CORRECT = /주의|조심|신경|무너|말리|떨어지|당겨|모아|각도|호흡|무릎이|허리가|어깨가|천천히|멈추|교정해|바로잡|고쳐/;
+  const ENCOURAGE = /화이팅|파이팅|힘내|해\s?봐요|해\s?보세요|해\s?오세요|해\s?주세요|꾸준|조금만|다음엔|다음\s?(주|시간|수업)|할\s?수\s?있|같이|응원|기대|드세요|챙겨/;
   sents.forEach(s => {
-    if(/주의|조심|신경|무너|말리|떨어지|펴\s|펴주|당겨|모아|힘이 들어|자세|각도|호흡|코어|무릎이|허리가|어깨가/.test(s)) cls.자세교정++;
-    else if(/좋아|잘\s?하|잘\s?됐|잘\s?되|훌륭|대단|멋지|멋있|성공|늘었|좋았|완벽|최고|굿/.test(s)) cls.칭찬++;
-    else if(/화이팅|파이팅|힘내|해\s?봐요|해\s?보세요|해\s?오세요|꾸준|조금만|다음엔|해\s?주세요|할\s?수\s?있|같이/.test(s)) cls.독려++;
+    if(PRAISE.test(s)) cls.칭찬++;
+    else if(CORRECT.test(s)) cls.자세교정++;
+    else if(ENCOURAGE.test(s)) cls.독려++;
   });
   const sum = cls.칭찬 + cls.독려 + cls.자세교정;
-  P["피드백_어조"] = sum < 2 ? null : {칭찬:Math.round(cls.칭찬 / sum * 100), 독려:Math.round(cls.독려 / sum * 100), 자세교정:0};
-  if(P["피드백_어조"]) P["피드백_어조"].자세교정 = 100 - P["피드백_어조"].칭찬 - P["피드백_어조"].독려;
+  if(sum < 2) P["피드백_어조"] = null;
+  else {
+    const a = Math.round(cls.칭찬 / sum * 100), b = Math.round(cls.독려 / sum * 100);
+    P["피드백_어조"] = {칭찬:a, 독려:b, 자세교정:Math.max(0, 100 - a - b)};
+  }
   // 이 사람이 안 쓸 말투
   P["금지할_느낌"] = !P["경어도"] ? null : P["경어도"].includes("해요") ? "'~하시기 바랍니다', '~입니다' 같은 딱딱한 보고서 말투" + (totalE ? "" : ", 이모지") : P["경어도"].includes("합니다") ? "'ㅋㅋ'나 반말 같은 가벼운 말투" : null;
   // 원문 예시 3개: 말투가 잘 드러나는 문장, 서로 다른 일지에서

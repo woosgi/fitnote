@@ -7,7 +7,8 @@
 const ALLOWED_ORIGINS = ["https://woosgi.github.io"];
 const MODEL = "claude-haiku-5-5";
 const MAX_PROMPT = 12000;      // 글자 수 상한
-const PER_HOUR = 60;           // IP당 1시간 요청 수
+const MAX_TOKENS = 3000;       // 답변 길이 상한 (2000이면 긴 일지가 중간에 끊겼어요)
+const PER_HOUR = 120;          // IP당 1시간 요청 수 (앱이 한 번에 두 갈래로 나눠 부르므로 넉넉히)
 const hits = new Map();
 
 function cors(origin) {
@@ -40,26 +41,39 @@ export default {
     if (list.length >= PER_HOUR) return reply({ error: "slow down" }, 429, origin);
     list.push(now); hits.set(ip, list);
 
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 2000,
-        system: "You are a writing helper inside a Korean personal-trainer journal app. Follow the user's instructions exactly and reply with JSON only, no code fences.",
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    let r;
+    try {
+      r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          system: "You are a writing helper inside a Korean personal-trainer journal app. Follow the user's instructions exactly and reply with JSON only, no code fences.",
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+    } catch {
+      return reply({ error: "AI 연결 실패" }, 502, origin);
+    }
     if (!r.ok) {
       let msg = ""; try { msg = (await r.json()).error?.message || ""; } catch {}
       return reply({ error: "Anthropic " + r.status + (msg ? ": " + msg.slice(0, 120) : "") }, 502, origin);
     }
     const data = await r.json();
     const text = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
-    return reply({ text }, 200, origin);
+    const stop = data.stop_reason || "";
+    // 앱이 "왜 비었는지"를 화면에 보여 줄 수 있게 상태를 같이 돌려줘요
+    return reply({
+      text,
+      stop_reason: stop,
+      truncated: stop === "max_tokens",
+      empty: !text.trim(),
+      usage: data.usage || null,
+    }, 200, origin);
   },
 };
